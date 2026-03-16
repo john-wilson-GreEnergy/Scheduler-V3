@@ -1,0 +1,68 @@
+import { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { Employee, Jobsite } from '../types';
+import PortalLayout from './PortalLayout';
+import MapPortal from './MapPortal';
+import Scheduler from './Scheduler';
+import ManpowerView from './ManpowerView';
+import LogisticsForecast from './LogisticsForecast';
+import { RefreshCw, Map as MapIcon, Calendar, LayoutGrid, TrendingUp } from 'lucide-react';
+
+export default function SiteManagerPortal() {
+  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [jobsites, setJobsites] = useState<Jobsite[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchData = async (silent = false) => {
+    if (!silent) setLoading(true);
+    const [empRes, siteRes, rotRes] = await Promise.all([
+      supabase.from('employees').select('*').order('last_name'),
+      supabase.from('jobsites').select('*').order('jobsite_name'),
+      supabase.from('rotation_configs').select('*')
+    ]);
+
+    if (empRes.data) {
+      const configs = rotRes.data || [];
+      setEmployees(empRes.data.map(emp => ({
+        ...emp,
+        rotation_config: configs.find(c => c.employee_fk === emp.id) || null
+      })));
+    }
+    if (siteRes.data) setJobsites(siteRes.data);
+    if (!silent) setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const tabs = [
+    { id: 'dashboard', label: 'Dashboard', icon: <Calendar size={16} />, category: 'Operations' },
+    { id: 'manpower', label: 'Manpower', icon: <LayoutGrid size={16} />, category: 'Operations' },
+    { id: 'map', label: 'Map View', icon: <MapIcon size={16} />, category: 'Operations' },
+    { id: 'forecast', label: 'Logistics Forecast', icon: <TrendingUp size={16} />, category: 'Insights' },
+  ];
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#050A08] flex items-center justify-center">
+        <RefreshCw className="text-emerald-500 animate-spin" size={32} />
+      </div>
+    );
+  }
+
+  return (
+    <PortalLayout 
+      title="Site Manager Portal" 
+      tabs={tabs} 
+      activeTab={activeTab} 
+      onTabChange={setActiveTab}
+    >
+      {activeTab === 'dashboard' && <Scheduler employees={employees} jobsites={jobsites} />}
+      {activeTab === 'manpower' && <ManpowerView employees={employees} jobsites={jobsites} />}
+      {activeTab === 'map' && <MapPortal jobsites={jobsites} employees={employees} />}
+      {activeTab === 'forecast' && <LogisticsForecast employees={employees} jobsites={jobsites} onNavigate={setActiveTab} />}
+    </PortalLayout>
+  );
+}
