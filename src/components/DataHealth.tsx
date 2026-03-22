@@ -24,9 +24,10 @@ interface DataHealthProps {
 export default function DataHealth({ employees, jobsites }: DataHealthProps) {
   const issues = useMemo(() => {
     const list: { id: string, type: 'error' | 'warning' | 'info', title: string, description: string, count: number }[] = [];
+    const fieldEmployees = employees.filter(e => e.role !== 'hr');
 
     // Check 1: Missing Rotation Configs
-    const missingRotations = employees.filter(e => !e.rotation_config && !e.rotation_group).length;
+    const missingRotations = fieldEmployees.filter(e => !e.rotation_config && !e.rotation_group).length;
     if (missingRotations > 0) {
       list.push({
         id: 'missing-rotations',
@@ -38,7 +39,7 @@ export default function DataHealth({ employees, jobsites }: DataHealthProps) {
     }
 
     // Check 2: Inactive Employees
-    const inactiveEmployees = employees.filter(e => !e.is_active).length;
+    const inactiveEmployees = fieldEmployees.filter(e => !e.is_active).length;
     if (inactiveEmployees > 0) {
       list.push({
         id: 'inactive-employees',

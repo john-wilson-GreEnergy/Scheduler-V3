@@ -14,29 +14,44 @@ export const PerformancePulseTile: React.FC<PerformancePulseTileProps> = ({ targ
       // 1. Fetch all submissions for this target
       const { data: submissions, error } = await supabase
         .from('survey_submissions')
-        .select('scores')
+        .select('scores, survey_type')
         .eq('target_id', targetId);
 
       if (error || !submissions || submissions.length === 0) return;
 
       // 2. Fetch all questions to map IDs to categories
-      const { data: questions } = await supabase.from('survey_questions').select('id, category');
+      const { data: questions } = await supabase.from('survey_questions').select('id, category, survey_type');
       if (!questions) return;
 
-      const questionMap = new Map(questions.map(q => [q.id, q.category]));
+      const questionMap = new Map(questions.map(q => [q.id, { category: q.category, survey_type: q.survey_type }]));
+      console.log('Question map:', Object.fromEntries(questionMap));
 
       // 3. Calculate averages
       const categoryScores: Record<string, number[]> = {};
       
       submissions.forEach(sub => {
-        Object.entries(sub.scores as Record<string, number>).forEach(([qId, score]) => {
-          const category = questionMap.get(qId);
-          if (category) {
+        let scores = sub.scores;
+        if (typeof scores === 'string') {
+          try {
+            scores = JSON.parse(scores);
+          } catch (e) {
+            console.error('Error parsing scores JSON:', e);
+            return;
+          }
+        }
+        if (!scores) return;
+
+        Object.entries(scores as Record<string, number>).forEach(([qId, score]) => {
+          const questionData = questionMap.get(qId);
+          
+          if (questionData) {
+            const category = questionData.category;
             if (!categoryScores[category]) categoryScores[category] = [];
             categoryScores[category].push(score);
           }
         });
       });
+      console.log('Final category scores:', categoryScores);
 
       const categoryAverages = Object.entries(categoryScores).map(([category, scores]) => ({
         category,
@@ -44,7 +59,7 @@ export const PerformancePulseTile: React.FC<PerformancePulseTileProps> = ({ targ
       }));
 
       const allScores = Object.values(categoryScores).flat();
-      const overallAverage = allScores.reduce((a, b) => a + b, 0) / allScores.length;
+      const overallAverage = allScores.length > 0 ? allScores.reduce((a, b) => a + b, 0) / allScores.length : 0;
 
       setData({ categoryAverages, overallAverage });
     };

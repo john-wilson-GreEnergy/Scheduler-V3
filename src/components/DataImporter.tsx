@@ -79,76 +79,80 @@ export default function DataImporter({ employees }: DataImporterProps) {
               
               const weekStart = `20${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
 
-              // Handle dual assignments (e.g., "Sunstreams/Vacation")
-              const assignment = assignmentValue.trim();
-              if (!assignment || assignment === '-' || assignment === 'Rotation') continue;
+              // Handle dual assignments (e.g., "El Sol/Sunstreams")
+              const assignmentValueTrimmed = assignmentValue.trim();
+              const normalizedAssignmentValue = assignmentValueTrimmed.replace(/vacay/gi, 'Vacation');
+              if (!normalizedAssignmentValue || normalizedAssignmentValue === '-') continue;
               
               // Robustness check: skip if it looks like an employee name
-              if (employees.some(e => `${e.first_name} ${e.last_name}`.toLowerCase() === assignment.toLowerCase())) {
-                console.warn(`Skipping assignment as it looks like an employee name: '${assignment}'`);
+              if (employees.some(e => `${e.first_name} ${e.last_name}`.toLowerCase() === normalizedAssignmentValue.toLowerCase())) {
+                console.warn(`Skipping assignment as it looks like an employee name: '${normalizedAssignmentValue}'`);
                 continue;
               }
 
-              const newAssignment = {
+              const assignmentParts = normalizedAssignmentValue.split('/');
+              
+              // Insert/Update assignment_weeks
+              const weekAssignment = {
                 employee_id: employee.employee_id_ref,
                 email: employee.email,
                 first_name: employee.first_name,
                 last_name: employee.last_name,
                 week_start: weekStart,
-                assignment_name: assignment,
+                assignment_name: assignmentValueTrimmed, // Keep full string for now
                 value_type: 'jobsite'
               };
 
-              // Find existing assignment that conflicts on either constraint
-              const existingIndex = assignmentsList.findIndex(a =>
-                (a.week_start === newAssignment.week_start &&
-                 ((newAssignment.employee_id && a.employee_id === newAssignment.employee_id) ||
-                  (newAssignment.email && a.email === newAssignment.email)))
-              );
+              // Find or create assignment_week
+              const { data: existingWeek, error: fetchWeekError } = await supabase
+                .from('assignment_weeks')
+                .select('id')
+                .eq('employee_id', weekAssignment.employee_id)
+                .eq('week_start', weekAssignment.week_start)
+                .maybeSingle();
+              
+              if (fetchWeekError) throw fetchWeekError;
 
-              if (existingIndex !== -1) {
-                // Merge
-                const existing = assignmentsList[existingIndex];
-                if (!existing.assignment_name.split('/').includes(newAssignment.assignment_name)) {
-                  existing.assignment_name = `${existing.assignment_name}/${newAssignment.assignment_name}`;
-                }
+              let weekId;
+              if (existingWeek) {
+                weekId = existingWeek.id;
+                await supabase.from('assignment_weeks').update(weekAssignment).eq('id', weekId);
               } else {
-                assignmentsList.push(newAssignment);
+                const { data: insertedWeek, error: insertWeekError } = await supabase
+                  .from('assignment_weeks')
+                  .insert(weekAssignment)
+                  .select('id')
+                  .single();
+                if (insertWeekError) throw insertWeekError;
+                weekId = insertedWeek.id;
+              }
+
+              // Insert/Update assignment_items
+              // Clear existing items for this week to avoid duplicates
+              await supabase.from('assignment_items').delete().eq('assignment_week_id', weekId);
+
+              for (let k = 0; k < assignmentParts.length; k++) {
+                const part = assignmentParts[k].trim();
+                let days;
+                if (assignmentParts.length === 1) {
+                  days = 'Mon,Tue,Wed,Thu,Fri,Sat,Sun';
+                } else {
+                  days = k === 0 ? 'Mon,Tue,Wed' : 'Thu,Fri,Sat';
+                }
+                
+                const { error: insertItemError } = await supabase
+                  .from('assignment_items')
+                  .insert({
+                    assignment_week_id: weekId,
+                    jobsite_name: part,
+                    days: days
+                  });
+                if (insertItemError) throw insertItemError;
               }
             }
           }
 
-          const assignmentsToUpsert = assignmentsList;
-          console.log('Assignments to upsert:', assignmentsToUpsert.length);
-          
-          for (const assignment of assignmentsToUpsert) {
-            // Check for existing assignment based on either unique constraint
-            const employeeIdFilter = assignment.employee_id ? `employee_id.eq.${assignment.employee_id}` : 'employee_id.is.null';
-            const emailFilter = assignment.email ? `email.eq.${assignment.email}` : 'email.is.null';
-            
-            const { data: existing, error: fetchError } = await supabase
-              .from('assignment_weeks')
-              .select('id')
-              .or(`and(${employeeIdFilter},week_start.eq.${assignment.week_start}),and(${emailFilter},week_start.eq.${assignment.week_start})`)
-              .maybeSingle();
-            
-            if (fetchError) throw fetchError;
-
-            if (existing) {
-              const { error: updateError } = await supabase
-                .from('assignment_weeks')
-                .update(assignment)
-                .eq('id', existing.id);
-              if (updateError) throw updateError;
-            } else {
-              const { error: insertError } = await supabase
-                .from('assignment_weeks')
-                .insert(assignment);
-              if (insertError) throw insertError;
-            }
-          }
-
-          setStatus({ type: 'success', message: `Successfully imported ${assignmentsToUpsert.length} assignments.` });
+          setStatus({ type: 'success', message: `Successfully imported assignments.` });
         } catch (err) {
           console.error('Import error:', err);
           setStatus({ type: 'error', message: `Failed to import: ${err instanceof Error ? err.message : 'Unknown error'}` });

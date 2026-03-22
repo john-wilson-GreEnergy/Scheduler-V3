@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { Employee } from '../types';
 
@@ -6,9 +6,11 @@ interface AuthContextType {
   user: any;
   employee: Employee | null;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
   isSiteManager: boolean;
   isSiteLead: boolean;
   isBessTech: boolean;
+  isHR: boolean;
   loading: boolean;
   handleLogout: () => Promise<void>;
   handleLogin: () => Promise<void>;
@@ -20,62 +22,88 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [isSiteManager, setIsSiteManager] = useState(false);
   const [isSiteLead, setIsSiteLead] = useState(false);
   const [isBessTech, setIsBessTech] = useState(false);
+  const [isHR, setIsHR] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const checkAdminStatus = (authUser: any, employeeData: Employee | null) => {
-    if (!authUser) return false;
-    if (employeeData?.role === 'admin') return true;
-    const email = authUser.email || '';
-    if (email.endsWith('@greenergyresources.com')) return true;
-    return false;
+  const checkAdminStatus = (role: string | null) => {
+    return role === 'admin' || role === 'super_admin';
   };
 
-  const checkRoleStatus = (employeeData: Employee | null) => {
-    if (!employeeData) return { isSiteManager: false, isSiteLead: false, isBessTech: false };
-    
+  const checkRoleStatus = (role: string | null) => {
     return {
-      isSiteManager: employeeData.role === 'site_manager',
-      isSiteLead: employeeData.role === 'site_lead',
-      isBessTech: employeeData.role === 'bess_tech'
+      isSuperAdmin: role === 'super_admin',
+      isSiteManager: role === 'site_manager',
+      isSiteLead: role === 'site_lead',
+      isBessTech: role === 'bess_tech',
+      isHR: role === 'hr'
     };
   };
 
   const fetchEmployeeData = async (userId: string, authUser: any) => {
     try {
+      console.log('Fetching employee data for userId:', userId);
+      console.log('AuthUser email:', authUser.email);
+      
+      // 1. Fetch employee record
       let empRes = await supabase.from('employees').select('*').eq('auth_user_id', userId).maybeSingle();
+      console.log('Employee query result (by auth_user_id):', empRes);
       
       if (!empRes.data && authUser.email) {
+        console.log('No employee found by auth_user_id, trying email:', authUser.email);
         empRes = await supabase.from('employees').select('*').ilike('email', authUser.email).maybeSingle();
+        console.log('Employee query result (by email):', empRes);
         if (empRes.data) {
           await supabase.from('employees').update({ auth_user_id: userId }).eq('id', empRes.data.id);
         }
       }
 
-      const rotRes = await supabase.from('rotation_configs').select('*').eq('employee_fk', userId).maybeSingle();
+      // 2. Fetch user role from user_roles table
+      const { data: roleData, error: roleError } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (roleError) console.error('Error fetching user role:', roleError);
+      const userRole = roleData?.role || null;
 
       if (empRes.data) {
+        // 3. Fetch rotation config using employee UUID
+        const rotRes = await supabase.from('rotation_configs').select('*').eq('employee_fk', empRes.data.id).maybeSingle();
+
         const employeeWithConfig = {
           ...empRes.data,
           rotation_config: rotRes.data || null
         };
         setEmployee(employeeWithConfig);
-        setIsAdmin(checkAdminStatus(authUser, employeeWithConfig));
-        const roles = checkRoleStatus(employeeWithConfig);
+        setIsAdmin(checkAdminStatus(userRole));
+        const roles = checkRoleStatus(userRole);
+        setIsSuperAdmin(roles.isSuperAdmin);
         setIsSiteManager(roles.isSiteManager);
         setIsSiteLead(roles.isSiteLead);
         setIsBessTech(roles.isBessTech);
+        setIsHR(roles.isHR);
       } else {
-        setIsAdmin(checkAdminStatus(authUser, null));
-        setIsSiteManager(false);
-        setIsSiteLead(false);
-        setIsBessTech(false);
+        setIsAdmin(checkAdminStatus(userRole));
+        const roles = checkRoleStatus(userRole);
+        setIsSuperAdmin(roles.isSuperAdmin);
+        setIsSiteManager(roles.isSiteManager);
+        setIsSiteLead(roles.isSiteLead);
+        setIsBessTech(roles.isBessTech);
+        setIsHR(roles.isHR);
       }
     } catch (err) {
       console.error('Error fetching employee data:', err);
-      setIsAdmin(checkAdminStatus(authUser, null));
+      setIsAdmin(false);
+      setIsSuperAdmin(false);
+      setIsSiteManager(false);
+      setIsSiteLead(false);
+      setIsBessTech(false);
+      setIsHR(false);
     } finally {
       setLoading(false);
     }
@@ -103,6 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log('AuthProvider: Session result:', session ? 'User found' : 'No user');
         setUser(session?.user ?? null);
         
+        // Only fetch employee data if we have a session
         if (session?.user) {
           await fetchEmployeeData(session.user.id, session.user);
         } else {
@@ -119,6 +148,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       console.log('AuthProvider: Auth state changed:', _event, session ? 'User found' : 'No user');
       setUser(session?.user ?? null);
+      
+      // Only fetch if session exists and is different from current state (implicitly handled by fetchEmployeeData)
       if (session?.user) {
         fetchEmployeeData(session.user.id, session.user);
       } else {
@@ -161,13 +192,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setEmployee(null);
     setIsAdmin(false);
+    setIsSuperAdmin(false);
     setIsSiteManager(false);
     setIsSiteLead(false);
     setIsBessTech(false);
+    setIsHR(false);
   };
 
+  const value = useMemo(() => ({
+    user, 
+    employee, 
+    isAdmin, 
+    isSuperAdmin,
+    isSiteManager, 
+    isSiteLead, 
+    isBessTech, 
+    isHR,
+    loading, 
+    handleLogout, 
+    handleLogin 
+  }), [user, employee, isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isBessTech, isHR, loading]);
+
   return (
-    <AuthContext.Provider value={{ user, employee, isAdmin, isSiteManager, isSiteLead, isBessTech, loading, handleLogout, handleLogin }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

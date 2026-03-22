@@ -23,14 +23,14 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Announcement, AssignmentWeek, AssignmentItem, PortalAction, Jobsite, RotationConfig } from '../types';
+import { Announcement, AssignmentWeek, AssignmentItem, PortalAction, Jobsite, RotationConfig, JobsiteGroup } from '../types';
 import { isRotationWeek } from '../utils/rotation';
 import { IconComponent } from './PortalComponents';
 import PortalLayout from './PortalLayout';
 import MapPortal from './MapPortal';
 import JobsiteInfoCard from './JobsiteInfoCard';
 import Chat from './Chat';
-import { format, startOfMonth, endOfMonth, startOfQuarter, endOfQuarter, isWithinInterval, addDays, subDays, getDay, getDate, getMonth } from 'date-fns';
+import { format, startOfMonth, endOfMonth, startOfQuarter, endOfQuarter, isWithinInterval, addDays, subDays, getDay, getDate, getMonth, startOfWeek, addWeeks } from 'date-fns';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 
 const isScheduledActive = (item: Announcement | PortalAction, now: Date): boolean => {
@@ -44,10 +44,17 @@ const isScheduledActive = (item: Announcement | PortalAction, now: Date): boolea
     if (!isNaN(end.getTime()) && now > end) return false;
   }
 
-  const duration = item.duration_days || 7;
-
   // Check Announcement specific schedule
+  if ('scheduling_mode' in item && item.scheduling_mode === 'weeks') {
+    const weekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
+    const endOfWeekRange = addWeeks(weekStart, item.weeks_count || 1);
+    return isWithinInterval(now, { start: weekStart, end: endOfWeekRange });
+  }
+
+  // Check PortalAction specific schedule
   if ('schedule_type' in item && item.schedule_type && item.schedule_type !== 'none') {
+    const portalAction = item as PortalAction;
+    const duration = portalAction.duration_days || 7;
     const monthStart = startOfMonth(now);
     const monthEnd = endOfMonth(now);
     const quarterStart = startOfQuarter(now);
@@ -79,6 +86,8 @@ const isScheduledActive = (item: Announcement | PortalAction, now: Date): boolea
 
   // Check PortalAction specific recurrence
   if ('recurrence_type' in item && item.recurrence_type && item.recurrence_type !== 'none') {
+    const portalAction = item as PortalAction;
+    const duration = portalAction.duration_days || 7;
     const dayOfMonth = getDate(now);
     const dayOfWeek = getDay(now); // 0-6
     const month = getMonth(now); // 0-11
@@ -130,6 +139,10 @@ const isScheduledActive = (item: Announcement | PortalAction, now: Date): boolea
 
 export default function EmployeePortal() {
   const { employee, user } = useAuth();
+  
+  useEffect(() => {
+    console.log('EmployeePortal: employee object:', employee);
+  }, [employee]);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'links' | 'map'>('dashboard');
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -142,6 +155,7 @@ export default function EmployeePortal() {
   const [assignmentItems, setAssignmentItems] = useState<AssignmentItem[]>([]);
   const [portalActions, setPortalActions] = useState<PortalAction[]>([]);
   const [jobsites, setJobsites] = useState<Jobsite[]>([]);
+  const [jobsiteGroups, setJobsiteGroups] = useState<JobsiteGroup[]>([]);
   const [portalRequests, setPortalRequests] = useState<any[]>([]);
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
@@ -154,6 +168,15 @@ export default function EmployeePortal() {
   const [myCompletions, setMyCompletions] = useState<string[]>([]); // action_ids already completed
   const [expandedAction, setExpandedAction] = useState<string | null>(null);
   const [embeddedFormAction, setEmbeddedFormAction] = useState<PortalAction | null>(null);
+
+  const filteredJobsites = useMemo(() => {
+    const currentJobsiteIds = currentAssignment?.assignment_items?.map(item => item.jobsites?.id) || [];
+    const nextAssignment = upcomingAssignments[0];
+    const nextJobsiteIds = nextAssignment?.assignment_items?.map(item => item.jobsites?.id) || [];
+    const allowedIds = new Set([...currentJobsiteIds, ...nextJobsiteIds]);
+    
+    return jobsites.filter(j => allowedIds.has(j.id));
+  }, [jobsites, currentAssignment, upcomingAssignments]);
 
   const resolveUrl = (url: string) => {
     if (!employee || !url) return url;
@@ -184,20 +207,23 @@ export default function EmployeePortal() {
           .eq('active', true)
           .order('sort_order', { ascending: true }),
         supabase.from('jobsites').select('*').eq('is_active', true),
+        supabase.from('jobsite_groups').select('*'),
         supabase.from('rotation_configs').select('*')
       ];
 
       if (employee) {
+        console.log('Fetching assignment data for employee:', employee.email);
         queries.push(
           supabase.from('assignment_weeks')
-            .select('*')
-            .eq('email', employee.email)
+            .select('*, assignment_items(*, jobsites(*))')
+            .eq('employee_fk', employee.id)
             .order('week_start', { ascending: false }),
-          Promise.resolve({ data: [], error: null }), // assignment_items placeholder
           supabase.from('portal_requests').select('*').eq('employee_fk', employee.id).order('created_at', { ascending: false }),
           supabase.from('recent_activity').select('*').eq('employee_fk', employee.id).order('created_at', { ascending: false }).limit(5),
-          supabase.from('portal_action_completions').select('action_id').eq('email', employee.email)
+          supabase.from('portal_action_completions').select('action_id').eq('employee_id', employee.id)
         );
+      } else {
+        console.log('No employee object available, skipping assignment data fetch.');
       }
 
       const results = await Promise.all(queries);
@@ -205,7 +231,14 @@ export default function EmployeePortal() {
       const annRes = results[0];
       const actionsRes = results[1];
       const sitesRes = results[2];
-      const rotRes = results[3];
+      const groupRes = results[3];
+      const rotRes = results[4];
+
+      if (annRes.error) console.error('Error fetching announcements:', annRes.error);
+      if (actionsRes.error) console.error('Error fetching portal actions:', actionsRes.error);
+      if (sitesRes.error) console.error('Error fetching jobsites:', sitesRes.error);
+      if (groupRes.error) console.error('Error fetching jobsite groups:', groupRes.error);
+      if (rotRes.error) console.error('Error fetching rotation configs:', rotRes.error);
 
       if (annRes.data) {
         const filteredAnnouncements = annRes.data.filter(ann => isScheduledActive(ann, now));
@@ -225,6 +258,10 @@ export default function EmployeePortal() {
         setPortalActions(filteredActions);
       }
       if (sitesRes.data) setJobsites(sitesRes.data);
+      if (groupRes.data) {
+        console.log('Jobsite Groups (EmployeePortal):', groupRes.data);
+        setJobsiteGroups(groupRes.data);
+      }
       if (rotRes.data) {
         const configMap: Record<string, RotationConfig> = {};
         rotRes.data.forEach(config => {
@@ -234,30 +271,34 @@ export default function EmployeePortal() {
       }
 
       if (employee && results.length > 4) {
-        const assignRes = results[4];
-        const itemsRes = results[5];
-        const reqRes = results[6];
-        const actRes = results[7];
-        const completionsRes = results[8];
+        const assignRes = results[5];
+        const itemsRes = results[6];
+        const reqRes = results[7];
+        const actRes = results[8];
+        const completionsRes = results[9];
 
         if (assignRes.data) {
+          console.log('EmployeePortal: assignment data:', assignRes.data);
           const now = new Date();
+          
           // Use T12:00:00 when comparing to avoid UTC timezone shift on date-only strings
           const current = assignRes.data.find(a => new Date(a.week_start + 'T12:00:00') <= now);
           // upcoming: future weeks, sorted ascending (soonest first)
           const upcoming = assignRes.data
             .filter(a => new Date(a.week_start + 'T12:00:00') > now)
-            .reverse();
+            .sort((a, b) => new Date(a.week_start).getTime() - new Date(b.week_start).getTime());
           
-          setCurrentAssignment(current || null);
+          console.log('EmployeePortal: current assignment:', current);
+          console.log('EmployeePortal: upcoming assignments:', upcoming);
+          
+          setCurrentAssignment(current || upcoming[0] || null);
           setUpcomingAssignments(upcoming);
           setAssignmentHistory([]); // not used in timeline anymore
 
-          if (current) {
-            const filteredItems = itemsRes.data?.filter(item => 
-              item.assignment_week_fk === current.id || item.assignment_fk === current.id
-            ) || [];
-            setAssignmentItems(filteredItems);
+          if (current && current.assignment_items) {
+            setAssignmentItems(current.assignment_items);
+          } else {
+            setAssignmentItems([]);
           }
         }
         if (reqRes.data) setPortalRequests(reqRes.data);
@@ -272,8 +313,10 @@ export default function EmployeePortal() {
   };
 
   useEffect(() => {
-    fetchData();
-  }, [employee]);
+    if (employee?.id) {
+      fetchData();
+    }
+  }, [employee?.id]);
 
   useEffect(() => {
     const updateTime = () => {
@@ -357,21 +400,41 @@ export default function EmployeePortal() {
     }
   };
 
-  const currentJobsite = useMemo(() => {
-    if (!currentAssignment || !jobsites.length) return null;
-    const assignmentNames = parseAssignmentNames(currentAssignment.assignment_name);
-    return jobsites.find(j => assignmentNames.includes(j.jobsite_group || '')) || null;
-  }, [currentAssignment, jobsites]);
+  const currentJobsites = useMemo(() => {
+    if (!currentAssignment || !currentAssignment.assignment_items || currentAssignment.assignment_items.length === 0) return [];
+    return currentAssignment.assignment_items
+      .map(item => item.jobsites)
+      .filter((jobsite): jobsite is Jobsite => !!jobsite);
+  }, [currentAssignment]);
+
+  const groupJobsites = useMemo(() => {
+    if (currentJobsites.length === 0) return [];
+
+    // Get all group names/IDs from assigned sites
+    const groupNames = new Set(currentJobsites.map(s => s.jobsite_group).filter(Boolean));
+    const groupIds = new Set(currentJobsites.map(s => s.group_id).filter(Boolean));
+
+    // If no groups, just return assigned sites
+    if (groupNames.size === 0 && groupIds.size === 0) return currentJobsites;
+
+    // Filter all jobsites that match any of the groups
+    return jobsites.filter(j => 
+      (j.jobsite_group && groupNames.has(j.jobsite_group)) || 
+      (j.group_id && groupIds.has(j.group_id)) ||
+      currentJobsites.some(as => as.id === j.id)
+    );
+  }, [currentJobsites, jobsites]);
 
   const currentCustomer = useMemo(() => {
-    return currentJobsite?.customer || null;
-  }, [currentJobsite]);
+    const assignedSites = currentAssignment?.assignment_items
+      ?.map(item => item.jobsites)
+      .filter((jobsite): jobsite is Jobsite => !!jobsite) || [];
+    return assignedSites.length > 0 ? assignedSites[0].customer : null;
+  }, [currentAssignment]);
 
   const currentSitesCount = useMemo(() => {
-    if (!currentAssignment || !jobsites.length) return 0;
-    const assignmentNames = parseAssignmentNames(currentAssignment.assignment_name);
-    return jobsites.filter(j => assignmentNames.includes(j.jobsite_group || '')).length;
-  }, [currentAssignment, jobsites]);
+    return groupJobsites.length;
+  }, [groupJobsites]);
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: <Calendar size={18} /> },
@@ -391,7 +454,7 @@ export default function EmployeePortal() {
 
   return (
     <PortalLayout 
-      title="Employee Portal" 
+      title="BESS Tech" 
       tabs={tabs} 
       activeTab={activeTab} 
       onTabChange={setActiveTab}
@@ -455,10 +518,10 @@ export default function EmployeePortal() {
                     <div className="space-y-4">
                       <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Recent Activity</h3>
                       <div className="space-y-3">
-                        {recentActivity.map(act => (
-                          <div key={act.id} className="flex items-center gap-3 text-xs">
+                        {recentActivity.map((act, index) => (
+                          <div key={act.id || act.created_at || index} className="flex items-center gap-3 text-xs">
                             <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-                            <span className="text-gray-400">{act.event_type.replace('_', ' ')}</span>
+                            <span className="text-gray-400">{(act.event_type || 'activity').replace('_', ' ')}</span>
                             <span className="text-gray-600 ml-auto">{new Date(act.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
                         ))}
@@ -568,7 +631,12 @@ export default function EmployeePortal() {
                     <div className="grid grid-cols-1 gap-4 mb-8">
                       <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
                         <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Assignment</span>
-                        <p className="text-sm font-bold text-white truncate">{currentAssignment.assignment_name || 'N/A'}</p>
+                        <p className="text-sm font-bold text-white truncate">
+                          {[...new Set(currentJobsites.map(j => {
+                            const group = jobsiteGroups.find(g => g.id === j.group_id);
+                            return group ? group.name : j.jobsite_name;
+                          }))].join(', ') || 'N/A'}
+                        </p>
                       </div>
                       <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
                         <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Customer</span>
@@ -592,54 +660,63 @@ export default function EmployeePortal() {
                     </div>
                     <Plus size={16} className="opacity-50" />
                   </button>
-                  <SurveyInitiator userId={employee?.id || ''} email={employee?.email || ''} userRole={employee?.role || 'employee'} />
+                  <SurveyInitiator userId={employee?.id || ''} email={employee?.email || ''} userRole={employee?.role || 'bess_tech'} />
                 </div>
               </div>
             </div>
 
-            {/* Jobsite Info Card */}
-            {currentJobsite && (
+            {/* Jobsite Info Cards */}
+            {groupJobsites.length > 0 && (
               <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="grid grid-cols-1 gap-6"
               >
-                <JobsiteInfoCard jobsite={currentJobsite} title="Assigned Jobsite Details" />
+                {groupJobsites.map((jobsite) => (
+                  <JobsiteInfoCard key={jobsite.id} jobsite={jobsite} title={`Jobsite Details: ${jobsite.jobsite_name}`} />
+                ))}
               </motion.div>
             )}
 
             {/* Timeline Section */}
             <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
-              <div className="flex items-center justify-between mb-8">
-                <div>
-                  <h2 className="text-2xl font-bold text-white">Assignment Timeline</h2>
-                  <p className="text-xs text-gray-500 mt-1 uppercase tracking-wider">Rolling view</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setTimelineIndex(Math.max(0, timelineIndex - 1))} disabled={timelineIndex === 0} className="p-2 bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl transition-all"><ChevronLeft size={18} /></button>
-                  <button onClick={() => setTimelineIndex(timelineIndex + 1)} disabled={timelineIndex + 6 >= (currentAssignment ? 1 : 0) + upcomingAssignments.length} className="p-2 bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl transition-all"><ChevronRight size={18} /></button>
-                </div>
-              </div>
-              
               {(() => {
-                // Show current week + upcoming only, already in ascending order
-                const allWeeks = [...(currentAssignment ? [currentAssignment] : []), ...upcomingAssignments];
+                const allWeeks = [
+                  ...(currentAssignment ? [currentAssignment] : []),
+                  ...upcomingAssignments.filter(a => a.id !== currentAssignment?.id)
+                ];
                 const visibleWeeks = allWeeks.slice(timelineIndex, timelineIndex + 6);
                 return (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
-                    {visibleWeeks.map((wk) => {
-                      const isCurrent = currentAssignment && wk.id === currentAssignment.id;
+                  <>
+                    <div className="flex items-center justify-between mb-8">
+                      <div>
+                        <h2 className="text-2xl font-bold text-white">Assignment Timeline</h2>
+                        <p className="text-xs text-gray-500 mt-1 uppercase tracking-wider">Rolling view</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setTimelineIndex(Math.max(0, timelineIndex - 1))} disabled={timelineIndex === 0} className="p-2 bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl transition-all"><ChevronLeft size={18} /></button>
+                        <button onClick={() => setTimelineIndex(timelineIndex + 1)} disabled={timelineIndex + 6 >= allWeeks.length} className="p-2 bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl transition-all"><ChevronRight size={18} /></button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
+                      {visibleWeeks.map((wk) => {
+                        const isCurrent = currentAssignment && wk.id === currentAssignment.id;
                       const weekDate = new Date(wk.week_start + 'T12:00:00');
                       const config = employee?.id ? rotationConfigs[employee.id] : undefined;
-                      const isScheduledRotation = config ? isRotationWeek(weekDate, config) : false;
-                      const isActuallyRotation = wk.assignment_name?.toLowerCase() === 'rotation';
+                      const isScheduledRotation = config ? isRotationWeek(weekDate, config) : (employee ? isRotationWeek(weekDate, employee) : false);
+                      const isActuallyRotation = wk.assignment_items?.some(item => item.jobsites?.jobsite_name.toLowerCase() === 'rotation') || false;
+                      const assignmentNames = wk.assignment_items?.map(item => {
+                        const group = jobsiteGroups.find(g => g.id === item.jobsites?.group_id);
+                        return group ? group.name : item.jobsites?.jobsite_name;
+                      }) || [];
+                      const assignmentName = [...new Set(assignmentNames)].join(', ') || '—';
                       const rotationConflict = isScheduledRotation !== isActuallyRotation;
 
                       return (
                         <div key={wk.id} className={`p-4 rounded-2xl border transition-all relative overflow-hidden ${isCurrent ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/5'}`}>
                           {isScheduledRotation && <div className="absolute top-0 right-0 px-2 py-0.5 bg-purple-500/20 text-purple-400 text-[8px] font-bold uppercase rounded-bl-lg">Rotation</div>}
                           <p className="text-[10px] text-gray-500 font-mono mb-1">{weekDate.toLocaleDateString()}</p>
-                          <p className={`text-sm font-bold truncate ${rotationConflict ? 'text-amber-400' : 'text-white'}`}>{wk.assignment_name || '—'}</p>
+                          <p className={`text-sm font-bold truncate ${rotationConflict ? 'text-amber-400' : 'text-white'}`}>{assignmentName}</p>
                           <div className="flex items-center justify-between mt-2">
                             <p className="text-[10px] text-gray-500">{isCurrent ? 'Current' : 'Scheduled'}</p>
                             {rotationConflict && <AlertTriangle size={10} className="text-amber-400" />}
@@ -648,9 +725,10 @@ export default function EmployeePortal() {
                       );
                     })}
                   </div>
-                );
-              })()}
-            </div>
+                </>
+              );
+            })()}
+          </div>
           </motion.div>
         )}
 
@@ -662,13 +740,18 @@ export default function EmployeePortal() {
             exit={{ opacity: 0, y: -20 }}
             className="h-[calc(100vh-12rem)]"
           >
-            <Chat jobsiteId={currentJobsite?.id} jobsiteGroup={currentJobsite?.jobsite_group} jobsiteName={currentJobsite?.jobsite_group || currentJobsite?.jobsite_name} />
+            <Chat 
+              jobsiteId={groupJobsites[0]?.id} 
+              jobsiteGroup={groupJobsites[0]?.jobsite_group} 
+              jobsiteName={groupJobsites[0]?.jobsite_group || groupJobsites[0]?.jobsite_name}
+              jobsiteGroupName={jobsiteGroups.find(g => g.id === groupJobsites[0]?.group_id)?.name || groupJobsites[0]?.jobsite_group || groupJobsites[0]?.jobsite_name}
+            />
           </motion.div>
         )}
 
         {activeTab === 'map' && (
           <motion.div key="map" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}>
-            <MapPortal jobsites={jobsites} />
+            <MapPortal jobsites={filteredJobsites} jobsiteGroups={jobsiteGroups} />
           </motion.div>
         )}
 

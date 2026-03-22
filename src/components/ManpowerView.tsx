@@ -2,6 +2,7 @@ import {
   DndContext, 
   closestCenter,
   PointerSensor,
+  KeyboardSensor,
   useSensor,
   useSensors,
   DragOverlay,
@@ -11,7 +12,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Employee, Jobsite } from '../types';
+import { Employee, Jobsite, JobsiteGroup } from '../types';
 import { 
   Users, 
   MapPin, 
@@ -27,30 +28,35 @@ import {
   X,
   AlertCircle,
   AlertTriangle,
-  Info
+  Info,
+  ListOrdered
 } from 'lucide-react';
+import AssignmentModal from './AssignmentModal';
 import { format, startOfWeek, addWeeks, isSameWeek, parseISO } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
 import { isRotationWeek } from '../utils/rotation';
+import { parseAssignmentNames } from '../utils/assignmentParser';
 import { RotationConfig } from '../types';
 
-function DraggableEmployee({ employee, children, key }: { employee: Employee, children: React.ReactNode, key?: string | number }) {
+const DraggableEmployee: React.FC<{ employee: Employee, days?: string[], activeId: string | null }> = ({ employee, children, days, activeId }) => {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: employee.id,
   });
+  const isDragging = activeId === employee.id;
   const style = transform ? {
     transform: CSS.Translate.toString(transform),
     zIndex: 100,
   } : undefined;
 
   return (
-    <div ref={setNodeRef} style={style} {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing">
+    <div ref={setNodeRef} style={{ ...style, opacity: isDragging ? 0.5 : 1 }} {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing flex flex-col gap-1">
       {children}
+      {days && <span className="text-[8px] font-bold text-emerald-500">({days.join(', ')})</span>}
     </div>
   );
-}
+};
 
-function DroppableJobsite({ id, children, className, key }: { id: string, children: React.ReactNode, className?: string, key?: string | number }) {
+const DroppableJobsite: React.FC<{ id: string, children: React.ReactNode, className?: string }> = ({ id, children, className }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: id,
   });
@@ -60,36 +66,66 @@ function DroppableJobsite({ id, children, className, key }: { id: string, childr
       {children}
     </div>
   );
-}
+};
 
 interface ManpowerViewProps {
   employees: Employee[];
   jobsites: Jobsite[];
+  jobsiteGroups: JobsiteGroup[];
 }
 
 interface AssignmentData {
   employee_id: string;
+  employee_fk?: string;
   email?: string;
-  jobsite_name: string;
+  jobsite_names: string[];
   week_start: string;
+  days: string[][]; // Array of arrays, one per jobsite
+  status: string;
 }
 
-export default function ManpowerView({ employees, jobsites }: ManpowerViewProps) {
+export default function ManpowerView({ employees, jobsites, jobsiteGroups }: ManpowerViewProps) {
   const [currentWeek, setCurrentWeek] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [assignments, setAssignments] = useState<AssignmentData[]>([]);
   const [loading, setLoading] = useState(true);
+  const fieldEmployees = useMemo(() => employees.filter(e => e.role !== 'hr'), [employees]);
+  const getGroupName = (groupId?: string) => {
+    return jobsiteGroups.find(g => g.id === groupId)?.name;
+  };
+
+  const getRotationGroupStyles = (rotationGroup?: string) => {
+    const groupColor = rotationGroup === 'A' ? 'bg-black border border-white/20' :
+                       rotationGroup === 'B' ? 'bg-red-500' :
+                       rotationGroup === 'C' ? 'bg-yellow-500' :
+                       rotationGroup === 'D' ? 'bg-blue-500' : 'bg-purple-500';
+    
+    const textColor = rotationGroup === 'A' ? 'text-white' :
+                      rotationGroup === 'B' ? 'text-red-400' :
+                      rotationGroup === 'C' ? 'text-yellow-400' :
+                      rotationGroup === 'D' ? 'text-blue-400' : 'text-purple-400';
+    
+    return { groupColor, textColor };
+  };
+
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [sortByStaffing, setSortByStaffing] = useState(false);
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationConfig>>({});
   const [selectedConflict, setSelectedConflict] = useState<Employee | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [assignmentModal, setAssignmentModal] = useState<{
+    employeeId: string;
+    targetJobsites: Jobsite[];
+    weekStr: string;
+  } | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
         distance: 5,
       },
-    })
+    }),
+    useSensor(KeyboardSensor)
   );
 
   const fetchAssignments = async () => {
@@ -97,39 +133,135 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
     try {
       const weekStr = format(currentWeek, 'yyyy-MM-dd');
       
-      // Fetch from both tables to ensure we don't miss anything
-      const [weeksRes, assignRes, rotRes] = await Promise.all([
-        supabase.from('assignment_weeks').select('*').eq('week_start', weekStr),
-        supabase.from('assignments').select('*').eq('week_start', weekStr),
-        supabase.from('rotation_configs').select('*')
-      ]);
+      // Fetch assignments for the current week from assignment_weeks table
+      const { data: weeksData, error: weeksError } = await supabase
+        .from('assignment_weeks')
+        .select('*, items:assignment_items(*)')
+        .eq('week_start', weekStr);
 
-      if (rotRes.data) {
+      if (weeksError) console.error('Error fetching assignment_weeks:', weeksError);
+      
+      // Group by employee_id and week_start, merging items
+      const assignmentsMap = new Map<string, any>();
+      weeksData?.forEach(row => {
+        const key = `${row.employee_fk}-${row.week_start}`;
+        if (!assignmentsMap.has(key)) {
+          assignmentsMap.set(key, { ...row, items: [...(row.items || [])] });
+        } else {
+          const existing = assignmentsMap.get(key);
+          existing.items = [...existing.items, ...(row.items || [])];
+        }
+      });
+      const uniqueWeeksData = Array.from(assignmentsMap.values());
+
+      // Fetch rotation configs
+      const { data: rotData } = await supabase
+        .from('rotation_configs')
+        .select('*');
+
+      if (rotData) {
         const configMap: Record<string, RotationConfig> = {};
-        rotRes.data.forEach(c => configMap[c.employee_fk] = c);
+        rotData.forEach(c => configMap[c.employee_fk] = c);
         setRotationConfigs(configMap);
       }
 
-      const combined: AssignmentData[] = [];
+      const mapped: AssignmentData[] = [];
       const seen = new Set<string>();
 
-      const processRow = (row: any) => {
-        const key = `${row.employee_id || row.email}-${row.week_start}`;
-        if (!seen.has(key) && row.assignment_name) {
-          combined.push({
-            employee_id: row.employee_id,
-            email: row.email,
-            jobsite_name: row.assignment_name,
-            week_start: row.week_start
+      const processWeek = (week: any) => {
+        // Match by employee_fk
+        const employee = fieldEmployees.find(e => e.id === week.employee_fk);
+        
+        if (!employee || !employee.is_active) {
+          return;
+        }
+
+        // Use a more granular key to allow multiple assignments per employee per week
+        // We will handle duplicate prevention at the assignment level
+        if (week.items && week.items.length > 0) {
+          week.items.forEach((item: any) => {
+            if (item.jobsite_fk) {
+              const key = `${employee.id}-${week.week_start}-${item.jobsite_fk}`;
+              if (!seen.has(key)) {
+                mapped.push({
+                  employee_id: employee.employee_id_ref.toString(),
+                  employee_fk: employee.id,
+                  email: employee.email,
+                  jobsite_names: [getGroupName(jobsites.find(j => j.id === item.jobsite_fk)?.group_id) || jobsites.find(j => j.id === item.jobsite_fk)?.jobsite_name || 'Unknown'],
+                  week_start: week.week_start,
+                  days: [item.days || []],
+                  status: week.status || 'assigned'
+                });
+                seen.add(key);
+              }
+            }
           });
-          seen.add(key);
+        }
+        
+        if (week.assignment_name) {
+          const assignmentNames = parseAssignmentNames(week.assignment_name);
+          
+          assignmentNames.forEach(name => {
+            const trimmedName = name.trim().toLowerCase();
+            
+            // Fallback to assignment_name matching jobsite_name OR group name
+            const jobsite = jobsites.find(j => 
+              j.jobsite_name.toLowerCase() === trimmedName ||
+              j.jobsite_alias?.toLowerCase() === trimmedName ||
+              (j.group_id && getGroupName(j.group_id)?.toLowerCase() === trimmedName)
+            );
+            
+            // If it's a group assignment, get all sites in the group
+            const group = jobsite?.group_id ? jobsiteGroups.find(g => g.id === jobsite.group_id) : null;
+            const sitesInGroup = group ? jobsites.filter(j => j.group_id === group.id) : [];
+            
+            // Try to find days in items
+            const items = week.items?.filter((i: any) => 
+              (group && sitesInGroup.some(s => s.id === i.jobsite_fk)) ||
+              (jobsite && i.jobsite_fk === jobsite.id)
+            );
+            
+            // Combine days from all items, fallback to week.days if items have no days
+            const itemDays = items && items.length > 0 
+              ? Array.from(new Set(items.flatMap((i: any) => i.days || []))) 
+              : undefined;
+            
+            const days = (itemDays && itemDays.length > 0) ? itemDays : week.days;
+            
+            const key = `${employee.id}-${week.week_start}-${group ? `group-${group.id}` : (jobsite ? jobsite.id : trimmedName)}`;
+            if (seen.has(key)) return;
+            
+            if (jobsite) {
+              mapped.push({
+                employee_id: employee.employee_id_ref.toString(),
+                employee_fk: employee.id,
+                email: employee.email,
+                jobsite_names: [jobsite.jobsite_name],
+                week_start: week.week_start,
+                days: [days],
+                status: week.status || 'assigned'
+              });
+              seen.add(key);
+            } else {
+              // Even if jobsite not found in table, track it as a named assignment
+              mapped.push({
+                employee_id: employee.employee_id_ref.toString(),
+                employee_fk: employee.id,
+                email: employee.email,
+                jobsite_names: [name.trim()],
+                week_start: week.week_start,
+                days: [days],
+                status: week.status || 'assigned'
+              });
+              seen.add(key);
+            }
+          });
         }
       };
 
-      weeksRes.data?.forEach(processRow);
-      assignRes.data?.forEach(processRow);
-
-      setAssignments(combined);
+      uniqueWeeksData.forEach(processWeek);
+      
+      setAssignments(mapped);
     } catch (err) {
       console.error('Error fetching manpower data:', err);
     } finally {
@@ -145,7 +277,7 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
       const employeeId = active.id;
       const targetJobsiteName = over.id; // The key in manpowerMatrix
       
-      const employee = employees.find(e => e.id === employeeId);
+      const employee = fieldEmployees.find(e => e.id === employeeId);
       if (!employee) return;
 
       const weekStr = format(currentWeek, 'yyyy-MM-dd');
@@ -156,17 +288,24 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
       );
       
       if (targetJobsiteName !== 'Unassigned') {
-        newAssignments.push({
-          employee_id: employee.employee_id_ref,
-          email: employee.email,
-          jobsite_name: targetJobsiteName,
-          week_start: weekStr
+        const targetJobsites = jobsites.filter(j => 
+          j.jobsite_name === targetJobsiteName || 
+          getGroupName(j.group_id) === targetJobsiteName
+        );
+        if (targetJobsites.length === 0) return;
+        
+        setAssignmentModal({
+          employeeId,
+          targetJobsites,
+          weekStr
         });
+        return;
       }
       setAssignments(newAssignments);
 
       // Save to Supabase
       try {
+        await supabase.rpc('set_audit_reason', { reason: 'manpower_drag_drop' });
         const { data: existing, error: fetchError } = await supabase
           .from('assignment_weeks')
           .select('id')
@@ -188,6 +327,7 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
             last_name: employee.last_name,
             week_start: weekStr,
             assignment_name: targetJobsiteName,
+            status: 'assigned',
             value_type: 'jobsite'
           };
 
@@ -206,163 +346,168 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
 
   useEffect(() => {
     fetchAssignments();
-  }, [currentWeek]);
+  }, [currentWeek, jobsites]);
 
-  const activeEmployees = useMemo(() => employees.filter(e => e.is_active), [employees]);
+  const activeEmployees = useMemo(() => fieldEmployees.filter(e => e.is_active), [fieldEmployees]);
   const activeJobsites = useMemo(() => jobsites.filter(j => j.is_active), [jobsites]);
 
   const manpowerMatrix = useMemo(() => {
-    const matrix: Record<string, Employee[]> = {
-      'On Rotation': [],
+    const matrix: Record<string, { employee: Employee, days: string[] }[]> = {
+      'Rotation': [],
+      'Unassigned': [],
       'On Vacation': [],
       'Off-Site': [],
-      'Unassigned': []
     };
     
     const offSiteStatuses = ['personal', 'training', 'sick', 'holiday', 'home office'];
     const jobsiteAliases: Record<string, string> = {
-      'prospect power': 'prospect',
       'oklahoma': 'oklahoma'
     };
 
+    const assignedJobsiteNames = new Set<string>();
+    assignments.forEach(asgn => {
+      asgn.jobsite_names.forEach(name => {
+        const normalized = (jobsiteAliases[name.toLowerCase()] || name.toLowerCase()).trim();
+        if (normalized !== '-' && normalized !== '' && normalized !== 'rotation' && normalized !== 'vacation') {
+          assignedJobsiteNames.add(normalized);
+        }
+      });
+    });
+
     // Initialize matrix with group names or jobsite names
     jobsites.forEach(site => {
-      const key = (site.jobsite_group || site.jobsite_name).trim();
+      const key = (getGroupName(site.group_id) || site.jobsite_name).trim();
       if (!matrix[key]) {
         matrix[key] = [];
       }
     });
 
     const assignedEmployeeIds = new Set<string>();
+    const jobsitesWithAssignments = new Set<string>();
 
     assignments.forEach(asgn => {
-      const emp = activeEmployees.find(e => 
-        (asgn.email && e.email.toLowerCase() === asgn.email.toLowerCase()) ||
-        (asgn.employee_id && e.employee_id_ref === asgn.employee_id)
-      );
+      const emp = activeEmployees.find(e => {
+        const emailMatch = asgn.email && e.email && e.email.toLowerCase() === asgn.email.toLowerCase();
+        const fkMatch = asgn.employee_fk && e.id && e.id.toString() === asgn.employee_fk.toString();
+        return emailMatch || fkMatch;
+      });
       
-      if (!emp) return;
-      
-      const assignmentName = asgn.jobsite_name.trim();
-      const lowerAssignment = assignmentName.toLowerCase();
-      const normalizedAssignment = jobsiteAliases[lowerAssignment] || lowerAssignment;
-
-      // Treat "-" as unassigned
-      if (assignmentName === '-' || assignmentName === '') {
+      if (!emp) {
+        // Log only a few times to avoid console spam
+        if (Math.random() < 0.1) {
+        }
         return;
       }
+      
+      asgn.jobsite_names.forEach(assignmentName => {
+        const normalizedAssignment = (jobsiteAliases[assignmentName.toLowerCase()] || assignmentName.toLowerCase()).trim();
 
-      assignedEmployeeIds.add(emp.id);
+        // Treat "-" as unassigned
+        if (assignmentName === '-' || assignmentName === '') {
+          return;
+        }
 
-      if (normalizedAssignment === 'rotation') {
-        matrix['On Rotation'].push(emp);
-      } else if (normalizedAssignment === 'vacation') {
-        matrix['On Vacation'].push(emp);
-      } else if (offSiteStatuses.includes(normalizedAssignment)) {
-        matrix['Off-Site'].push(emp);
-      } else {
-        // 1. Try to find a matching key in the matrix (case-insensitive)
-        let existingKey = Object.keys(matrix).find(key => 
-          key.toLowerCase() === normalizedAssignment
-        );
-
-        // 2. Fallback: Try to find if this assignment name matches a jobsite name that belongs to a group
-        if (!existingKey) {
+        if (asgn.status === 'rotation' || normalizedAssignment === 'rotation') {
+          matrix['Rotation'].push({ employee: emp, days: asgn.days[asgn.jobsite_names.indexOf(assignmentName)] });
+          assignedEmployeeIds.add(emp.id);
+        } else if (asgn.status === 'vacation' || normalizedAssignment === 'vacation') {
+          matrix['On Vacation'].push({ employee: emp, days: asgn.days[asgn.jobsite_names.indexOf(assignmentName)] });
+          assignedEmployeeIds.add(emp.id);
+        } else if (offSiteStatuses.includes(asgn.status)) {
+          matrix['Off-Site'].push({ employee: emp, days: asgn.days[asgn.jobsite_names.indexOf(assignmentName)] });
+          assignedEmployeeIds.add(emp.id);
+        } else {
+          assignedEmployeeIds.add(emp.id);
+          
+          // Find the site to determine the correct group/key
           const siteMatch = jobsites.find(j => 
-            j.jobsite_name.toLowerCase() === normalizedAssignment ||
-            (j.jobsite_group && j.jobsite_group.toLowerCase() === normalizedAssignment)
+            j.jobsite_name.toLowerCase().trim() === normalizedAssignment ||
+            (j.group_id && getGroupName(j.group_id)?.toLowerCase().trim() === normalizedAssignment)
           );
-          if (siteMatch) {
-            existingKey = (siteMatch.jobsite_group || siteMatch.jobsite_name).trim();
+          
+          if (!siteMatch) {
+          }
+          
+          const key = siteMatch ? (getGroupName(siteMatch.group_id) || siteMatch.jobsite_name).trim() : assignmentName;
+          jobsitesWithAssignments.add(key);
+
+          if (matrix[key]) {
+            // Check if employee is already in matrix[key] to avoid duplicates
+            const isAlreadyAssigned = matrix[key].some(item => item.employee.id === emp.id);
+            if (!isAlreadyAssigned) {
+              matrix[key].push({ employee: emp, days: asgn.days[asgn.jobsite_names.indexOf(assignmentName)] });
+            }
+          } else {
+            // If it wasn't in the initial matrix, it might be a new/unrecognized site
+            matrix[key] = [{ employee: emp, days: asgn.days[asgn.jobsite_names.indexOf(assignmentName)] }];
           }
         }
-
-        if (existingKey) {
-          matrix[existingKey].push(emp);
-        } else {
-          matrix[assignmentName] = [emp];
-        }
-      }
+      });
     });
 
     // Add unassigned active employees
     activeEmployees.forEach(emp => {
       if (!assignedEmployeeIds.has(emp.id)) {
-        const isScheduledForRotation = isRotationWeek(currentWeek, rotationConfigs[emp.id], emp.rotation_group);
+        const isScheduledForRotation = isRotationWeek(currentWeek, { ...emp, rotation_config: rotationConfigs[emp.id] });
         if (isScheduledForRotation) {
-          matrix['On Rotation'].push(emp);
+          matrix['Rotation'].push({ employee: emp, days: [] });
         } else {
-          matrix['Unassigned'].push(emp);
+          matrix['Unassigned'].push({ employee: emp, days: [] });
         }
+      }
+    });
+
+    // Filter out jobsites that have no assignments, EXCEPT for special keys
+    const specialKeys = ['Rotation', 'On Vacation', 'Off-Site', 'Unassigned'];
+    Object.keys(matrix).forEach(key => {
+      if (!specialKeys.includes(key) && matrix[key].length === 0) {
+        delete matrix[key];
       }
     });
 
     return matrix;
   }, [activeJobsites, activeEmployees, assignments, rotationConfigs, currentWeek]);
 
-  const filteredMatrix = useMemo(() => {
+  const filteredMatrix: Record<string, { employee: Employee, days: string[] }[]> = useMemo(() => {
     if (!searchQuery) return manpowerMatrix;
     
     const lowerQuery = searchQuery.toLowerCase();
-    const newMatrix: Record<string, Employee[]> = {};
+    const newMatrix: Record<string, { employee: Employee, days: string[] }[]> = {};
     
-    (Object.entries(manpowerMatrix) as [string, Employee[]][]).forEach(([key, emps]) => {
-      const matchingEmps = emps.filter(emp => 
-        emp.first_name.toLowerCase().includes(lowerQuery) ||
-        emp.last_name.toLowerCase().includes(lowerQuery) ||
-        emp.email.toLowerCase().includes(lowerQuery) ||
-        emp.job_title.toLowerCase().includes(lowerQuery)
+    (Object.entries(manpowerMatrix) as [string, { employee: Employee, days: string[] }[]][]).forEach(([key, items]) => {
+      const matchingItems = items.filter(item => 
+        item.employee.first_name.toLowerCase().includes(lowerQuery) ||
+        item.employee.last_name.toLowerCase().includes(lowerQuery) ||
+        item.employee.email.toLowerCase().includes(lowerQuery) ||
+        item.employee.job_title.toLowerCase().includes(lowerQuery)
       );
       
       const keyMatches = key.toLowerCase().includes(lowerQuery);
       
-      if (keyMatches || matchingEmps.length > 0) {
-        newMatrix[key] = keyMatches ? emps : matchingEmps;
+      // Always include Rotation and Unassigned
+      const isSpecial = ['Rotation', 'Unassigned'].includes(key);
+      
+      if (isSpecial || keyMatches || matchingItems.length > 0) {
+        newMatrix[key] = keyMatches ? items : matchingItems;
       }
     });
     
     return newMatrix;
   }, [manpowerMatrix, searchQuery]);
 
-  const allDisplaySites = useMemo(() => {
-    // Get all active jobsites
-    const activeSiteNames = activeJobsites.map(j => (j.jobsite_group || j.jobsite_name).trim().toLowerCase());
-    
-    // Get all names from matrix that aren't special groups
-    const specialGroups = ['On Rotation', 'On Vacation', 'Off-Site', 'Unassigned'];
-    const matrixSiteNames = Object.keys(filteredMatrix).filter(name => !specialGroups.includes(name));
-    
-    // Combine and unique
-    const allNames = Array.from(new Set([...activeSiteNames, ...matrixSiteNames.map(n => n.toLowerCase())]));
-    
-    // Convert to display objects
-    return allNames.map(name => {
-      // Find any site that matches this name (either by name or group)
-      const site = jobsites.find(j => 
-        j.jobsite_name.trim().toLowerCase() === name.toLowerCase() ||
-        (j.jobsite_group && j.jobsite_group.trim().toLowerCase() === name.toLowerCase())
-      );
-      
-      const isGroup = jobsites.some(j => j.jobsite_group && j.jobsite_group.trim().toLowerCase() === name.toLowerCase());
-      const groupSites = isGroup ? jobsites.filter(j => j.jobsite_group && j.jobsite_group.trim().toLowerCase() === name.toLowerCase()) : [site];
+  const groupedJobsites = useMemo(() => {
+    const groups: Record<string, Jobsite[]> = {};
+    activeJobsites.forEach(site => {
+      const key = (getGroupName(site.group_id) || site.jobsite_name).trim();
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(site);
+    });
+    return groups;
+  }, [activeJobsites]);
 
-      return {
-        id: site?.id || `virtual-${name}`,
-        jobsite_name: site?.jobsite_name || name,
-        customer: site?.customer || 'Unmapped Site',
-        city: isGroup ? 'Multiple Locations' : (site?.city || 'Unknown'),
-        state: isGroup ? '' : (site?.state || '??'),
-        isVirtual: !site,
-        is_active: groupSites.some(s => s?.is_active),
-        min_staffing: site?.min_staffing || 2,
-        isGroup
-      };
-    }).filter(site => site.is_active);
-  }, [filteredMatrix, jobsites, activeJobsites]);
-
-  const showRotation = useMemo(() => {
-    return (filteredMatrix['On Rotation'] || []).length > 0;
-  }, [filteredMatrix]);
+  const showRotation = true;
 
   const showVacation = useMemo(() => {
     return (filteredMatrix['On Vacation'] || []).length > 0;
@@ -372,12 +517,110 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
     return (filteredMatrix['Off-Site'] || []).length > 0;
   }, [filteredMatrix]);
 
-  const showUnassigned = useMemo(() => {
-    return (filteredMatrix['Unassigned'] || []).length > 0;
-  }, [filteredMatrix]);
+  const showUnassigned = true;
+
+  const handleConfirmAssignment = async (action: 'replace' | 'add', jobsiteDays: Record<string, string[]>) => {
+    if (!assignmentModal) return;
+    
+    const { employeeId, weekStr } = assignmentModal;
+    const employee = fieldEmployees.find(e => e.id === employeeId);
+    if (!employee) return;
+
+    // Update local state
+    const newAssignments = assignments.filter(a => 
+      !( (a.employee_id === employee.employee_id_ref || (a.email && a.email.toLowerCase() === employee.email.toLowerCase())) && a.week_start === weekStr)
+    );
+    
+    const jobsiteNames: string[] = [];
+    const daysList: string[][] = [];
+
+    Object.entries(jobsiteDays).forEach(([jobsiteId, days]) => {
+      const jobsite = jobsites.find(j => j.id === jobsiteId);
+      if (jobsite) {
+        jobsiteNames.push(jobsite.jobsite_name);
+        daysList.push(days);
+      }
+    });
+
+    newAssignments.push({
+      employee_id: employee.employee_id_ref.toString(),
+      email: employee.email,
+      jobsite_names: jobsiteNames,
+      week_start: weekStr,
+      days: daysList,
+      status: 'assigned'
+    });
+    setAssignments(newAssignments);
+
+    // Save to Supabase
+    try {
+      await supabase.rpc('set_audit_reason', { reason: 'manpower_manual_assignment' });
+      
+      // 1. Get or create assignment_week
+      let { data: week, error: weekError } = await supabase
+        .from('assignment_weeks')
+        .select('id')
+        .eq('email', employee.email)
+        .eq('week_start', weekStr)
+        .maybeSingle();
+
+      if (weekError) throw weekError;
+
+      let weekId = week?.id;
+
+      if (!weekId) {
+        const { data: newWeek, error: insertWeekError } = await supabase
+          .from('assignment_weeks')
+          .insert({
+            employee_id: employee.employee_id_ref,
+            email: employee.email,
+            first_name: employee.first_name,
+            last_name: employee.last_name,
+            week_start: weekStr,
+            status: 'assigned'
+          })
+          .select('id')
+          .single();
+        
+        if (insertWeekError) throw insertWeekError;
+        weekId = newWeek.id;
+      }
+
+      // 2. Delete existing assignment_items
+      await supabase.from('assignment_items').delete().eq('assignment_week_fk', weekId);
+
+      // 3. Insert new assignment_items
+      const itemsToInsert = Object.entries(jobsiteDays).map(([jobsiteId, days]) => ({
+        assignment_week_fk: weekId,
+        jobsite_fk: jobsiteId,
+        days: days
+      }));
+
+      const { error: insertItemsError } = await supabase.from('assignment_items').insert(itemsToInsert);
+      if (insertItemsError) throw insertItemsError;
+
+    } catch (err) {
+      console.error('Error updating assignment:', err);
+      // Revert local state on error
+      fetchAssignments();
+    }
+    
+    setAssignmentModal(null);
+  };
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} onDragStart={(e) => setActiveId(e.active.id)}>
+      {assignmentModal && (
+        <AssignmentModal
+          isOpen={!!assignmentModal}
+          onClose={() => setAssignmentModal(null)}
+          employee={fieldEmployees.find(e => e.id === assignmentModal.employeeId)!}
+          targetJobsites={assignmentModal.targetJobsites}
+          allJobsites={activeJobsites}
+          weekStart={assignmentModal.weekStr}
+          onConfirm={handleConfirmAssignment}
+        />
+      )}
       <div className="h-full flex flex-col bg-[#050A08]">
         {/* Header Controls */}
         <div className="flex flex-col md:flex-row items-center justify-between p-6 gap-4 border-b border-emerald-900/20 bg-[#0A120F]/50">
@@ -425,6 +668,13 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
             
             <div className="flex items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/5">
               <button 
+                onClick={() => setSortByStaffing(!sortByStaffing)}
+                className={`p-2 rounded-lg transition-all ${sortByStaffing ? 'bg-emerald-500 text-black' : 'text-gray-500 hover:text-white'}`}
+                title="Sort by staffing level"
+              >
+                <ListOrdered size={16} />
+              </button>
+              <button 
                 onClick={() => setViewMode('grid')}
                 className={`p-2 rounded-lg transition-all ${viewMode === 'grid' ? 'bg-emerald-500 text-black' : 'text-gray-500 hover:text-white'}`}
               >
@@ -462,41 +712,47 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95 }}
-                    key="on-rotation-group"
-                    className="bg-[#0A120F] border border-purple-900/30 rounded-2xl overflow-hidden transition-all group hover:border-purple-500/50"
+                    key="rotation-group"
+                    className="bg-purple-950/20 border border-purple-900/30 rounded-2xl overflow-hidden transition-all group hover:border-purple-500/50"
                   >
                     <div className="p-4 border-b border-white/5 bg-purple-500/10 flex items-center justify-between">
                       <div className="min-w-0">
-                        <h3 className="text-sm font-bold text-white truncate">On Rotation</h3>
+                        <h3 className="text-sm font-bold text-white truncate">Rotation</h3>
                         <p className="text-[10px] text-purple-400 uppercase tracking-tighter font-bold">Cycle Break</p>
                       </div>
                       <div className="flex flex-col items-end">
                         <span className="text-lg font-mono font-bold text-purple-500">
-                          {(filteredMatrix['On Rotation']?.length || 0).toString().padStart(2, '0')}
+                          {(filteredMatrix['Rotation']?.length || 0).toString().padStart(2, '0')}
                         </span>
                         <span className="text-[8px] text-purple-400 uppercase font-bold">Personnel</span>
                       </div>
                     </div>
 
-                    <DroppableJobsite id="On Rotation" className="p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-                      {filteredMatrix['On Rotation']?.map(emp => (
-                        <DraggableEmployee key={emp.id} employee={emp}>
+                    <DroppableJobsite id="Rotation" className="p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
+                      {filteredMatrix['Rotation']?.map(({ employee, days }, index) => {
+                        const { groupColor } = getRotationGroupStyles(employee.rotation_group);
+                        return (
+                        <DraggableEmployee key={`${employee.id}-${days?.join('-') || 'no-days'}-${index}`} employee={employee} days={days} activeId={activeId}>
                           <div className="flex items-center justify-between p-2 bg-white/5 rounded-xl border border-white/5 hover:border-purple-500/30 transition-colors group/item">
                             <div className="flex items-center gap-2 min-w-0">
                               <div className="w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center text-[10px] font-bold text-purple-500 border border-purple-500/20">
-                                {emp.first_name[0]}{emp.last_name[0]}
+                                {employee.first_name?.[0]}{employee.last_name?.[0]}
                               </div>
                               <div className="min-w-0">
-                                <div className="text-[11px] font-bold text-white truncate">{emp.first_name} {emp.last_name}</div>
-                                <div className="text-[9px] text-gray-500 truncate">{emp.job_title}</div>
+                                <div className="text-[11px] font-bold text-white truncate flex items-center gap-1.5">
+                                  <div className={`w-2 h-2 rounded-full ${groupColor}`} title={`Rotation Group ${employee.rotation_group || 'None'}`} />
+                                  {employee.first_name} {employee.last_name}
+                                </div>
+                                <div className="text-[9px] text-gray-500 truncate">{employee.job_title}</div>
                               </div>
                             </div>
                             <div className="text-[8px] font-bold text-purple-500/50 uppercase tracking-widest group-hover/item:text-purple-500 transition-colors">
-                              {emp.role}
+                              {employee.role}
                             </div>
                           </div>
                         </DraggableEmployee>
-                      ))}
+                        );
+                      })}
                     </DroppableJobsite>
 
                     <div className="px-4 py-3 bg-black/40 border-t border-white/5 flex items-center justify-end">
@@ -528,24 +784,30 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
                     </div>
 
                     <DroppableJobsite id="On Vacation" className="p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-                      {filteredMatrix['On Vacation']?.map(emp => (
-                        <DraggableEmployee key={emp.id} employee={emp}>
+                      {filteredMatrix['On Vacation']?.map(({ employee, days }, index) => {
+                        const { groupColor } = getRotationGroupStyles(employee.rotation_group);
+                        return (
+                        <DraggableEmployee key={`${employee.id}-${days?.join('-') || 'no-days'}-${index}`} employee={employee} days={days} activeId={activeId}>
                           <div className="flex items-center justify-between p-2 bg-white/5 rounded-xl border border-white/5 hover:border-blue-500/30 transition-colors group/item">
                             <div className="flex items-center gap-2 min-w-0">
                               <div className="w-6 h-6 rounded-lg bg-blue-500/10 flex items-center justify-center text-[10px] font-bold text-blue-500 border border-blue-500/20">
-                                {emp.first_name[0]}{emp.last_name[0]}
+                                {employee.first_name?.[0]}{employee.last_name?.[0]}
                               </div>
                               <div className="min-w-0">
-                                <div className="text-[11px] font-bold text-white truncate">{emp.first_name} {emp.last_name}</div>
-                                <div className="text-[9px] text-gray-500 truncate">{emp.job_title}</div>
+                                <div className="text-[11px] font-bold text-white truncate flex items-center gap-1.5">
+                                  <div className={`w-2 h-2 rounded-full ${groupColor}`} title={`Rotation Group ${employee.rotation_group || 'None'}`} />
+                                  {employee.first_name} {employee.last_name}
+                                </div>
+                                <div className="text-[9px] text-gray-500 truncate">{employee.job_title}</div>
                               </div>
                             </div>
                             <div className="text-[8px] font-bold text-blue-500/50 uppercase tracking-widest group-hover/item:text-blue-500 transition-colors">
-                              {emp.role}
+                              {employee.role}
                             </div>
                           </div>
                         </DraggableEmployee>
-                      ))}
+                        );
+                      })}
                     </DroppableJobsite>
 
                     <div className="px-4 py-3 bg-black/40 border-t border-white/5 flex items-center justify-end">
@@ -577,24 +839,30 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
                     </div>
 
                     <DroppableJobsite id="Off-Site" className="p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-                      {filteredMatrix['Off-Site']?.map(emp => (
-                        <DraggableEmployee key={emp.id} employee={emp}>
+                      {filteredMatrix['Off-Site']?.map(({ employee, days }, index) => {
+                        const { groupColor } = getRotationGroupStyles(employee.rotation_group);
+                        return (
+                        <DraggableEmployee key={`${employee.id}-${days?.join('-') || 'no-days'}-${index}`} employee={employee} days={days} activeId={activeId}>
                           <div className="flex items-center justify-between p-2 bg-white/5 rounded-xl border border-white/5 hover:border-amber-500/30 transition-colors group/item">
                             <div className="flex items-center gap-2 min-w-0">
                               <div className="w-6 h-6 rounded-lg bg-amber-500/10 flex items-center justify-center text-[10px] font-bold text-amber-500 border border-amber-500/20">
-                                {emp.first_name[0]}{emp.last_name[0]}
+                                {employee.first_name?.[0]}{employee.last_name?.[0]}
                               </div>
                               <div className="min-w-0">
-                                <div className="text-[11px] font-bold text-white truncate">{emp.first_name} {emp.last_name}</div>
-                                <div className="text-[9px] text-gray-500 truncate">{emp.job_title}</div>
+                                <div className="text-[11px] font-bold text-white truncate flex items-center gap-1.5">
+                                  <div className={`w-2 h-2 rounded-full ${groupColor}`} title={`Rotation Group ${employee.rotation_group || 'None'}`} />
+                                  {employee.first_name} {employee.last_name}
+                                </div>
+                                <div className="text-[9px] text-gray-500 truncate">{employee.job_title}</div>
                               </div>
                             </div>
                             <div className="text-[8px] font-bold text-amber-500/50 uppercase tracking-widest group-hover/item:text-amber-500 transition-colors">
-                              {emp.role}
+                              {employee.role}
                             </div>
                           </div>
                         </DraggableEmployee>
-                      ))}
+                        );
+                      })}
                     </DroppableJobsite>
 
                     <div className="px-4 py-3 bg-black/40 border-t border-white/5 flex items-center justify-end">
@@ -625,70 +893,76 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
                   </div>
 
                   <DroppableJobsite id="Unassigned" className="p-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-                    {filteredMatrix['Unassigned']?.map(emp => (
-                      <DraggableEmployee key={emp.id} employee={emp}>
+                    {filteredMatrix['Unassigned']?.map(({ employee, days }, index) => {
+                      const { groupColor } = getRotationGroupStyles(employee.rotation_group);
+                      return (
+                      <DraggableEmployee key={`${employee.id}-${days?.join('-') || 'no-days'}-${index}`} employee={employee} days={days} activeId={activeId}>
                         <div className="flex items-center justify-between p-2 bg-white/5 rounded-xl border border-white/5 hover:border-gray-500/30 transition-colors group/item">
                           <div className="flex items-center gap-2 min-w-0">
                             <div className="w-6 h-6 rounded-lg bg-white/10 flex items-center justify-center text-[10px] font-bold text-gray-400 border border-white/10">
-                              {emp.first_name[0]}{emp.last_name[0]}
+                              {employee.first_name?.[0]}{employee.last_name?.[0]}
                             </div>
                             <div className="min-w-0">
-                              <div className="text-[11px] font-bold text-white truncate">{emp.first_name} {emp.last_name}</div>
-                              <div className="text-[9px] text-gray-500 truncate">{emp.job_title}</div>
+                              <div className="text-[11px] font-bold text-white truncate flex items-center gap-1.5">
+                                <div className={`w-2 h-2 rounded-full ${groupColor}`} title={`Rotation Group ${employee.rotation_group || 'None'}`} />
+                                {employee.first_name} {employee.last_name}
+                              </div>
+                              <div className="text-[9px] text-gray-500 truncate">{employee.job_title}</div>
                             </div>
                           </div>
                           <div className="text-[8px] font-bold text-gray-500/50 uppercase tracking-widest group-hover/item:text-gray-500 transition-colors">
-                            {emp.role}
+                            {employee.role}
                           </div>
                         </div>
                       </DraggableEmployee>
-                    ))}
+                      );
+                    })}
                   </DroppableJobsite>
 
                   <div className="px-4 py-3 bg-black/40 border-t border-white/5 flex items-center justify-end">
                     <span className="text-[8px] text-gray-500 uppercase font-bold">Unassigned Staff</span>
                   </div>
                 </motion.div>
-                {allDisplaySites.map((site) => {
-                  const assigned = filteredMatrix[site.jobsite_name] || [];
+                {Object.entries(groupedJobsites)
+                  .filter(([groupName]) => groupName.toLowerCase() !== 'rotation' && (filteredMatrix[groupName] || []).length > 0)
+                  .sort((a, b) => {
+                    if (!sortByStaffing) return 0;
+                    const aCount = (filteredMatrix[a[0]] || []).length;
+                    const bCount = (filteredMatrix[b[0]] || []).length;
+                    return bCount - aCount;
+                  })
+                  .map(([groupName, sites]: [string, Jobsite[]]) => {
+                  const assigned = filteredMatrix[groupName] || [];
                   
                   return (
-                    <DroppableJobsite id={site.jobsite_name} key={site.id} className="h-full">
+                    <DroppableJobsite id={groupName} key={groupName} className="h-full">
                       <motion.div
                         layout
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
-                        className={`bg-[#0A120F] border rounded-2xl overflow-hidden transition-all group h-full ${
-                          assigned.length === 0 ? 'border-white/5 opacity-50' : 
-                          site.isVirtual ? 'border-amber-900/30 hover:border-amber-500/50' :
-                          'border-emerald-900/30 hover:border-emerald-500/50'
-                        }`}
+                        className={`bg-[#0A120F] border rounded-2xl overflow-hidden transition-all group h-full border-emerald-900/30 hover:border-emerald-500/50`}
                       >
-                        <div className={`p-4 border-b border-white/5 flex items-center justify-between ${
-                          site.isVirtual ? 'bg-amber-500/5' : 'bg-black/20'
-                        }`}>
+                        <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/20">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <h3 className="text-sm font-bold text-white truncate">{site.jobsite_name}</h3>
-                              {site.isGroup && (
+                              <h3 className="text-sm font-bold text-white truncate">{groupName}</h3>
+                              {sites.length > 1 && (
                                 <span className="text-[8px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase">Group</span>
                               )}
-                              {site.isVirtual && (
-                                <span className="text-[8px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded border border-amber-500/20 font-bold uppercase">Unmapped</span>
-                              )}
-                              {!site.is_active && !site.isVirtual && (
-                                <span className="text-[8px] bg-red-500/10 text-red-500 px-1.5 py-0.5 rounded border border-red-500/20 font-bold uppercase">Inactive</span>
-                              )}
                             </div>
-                            <p className="text-[10px] text-gray-500 uppercase tracking-tighter font-bold">{site.customer}</p>
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {sites.map(s => (
+                                <span key={s.id} className="text-[8px] bg-white/5 text-gray-400 px-1.5 py-0.5 rounded border border-white/10 font-bold uppercase">{s.jobsite_name}</span>
+                              ))}
+                            </div>
                           </div>
                           <div className="flex flex-col items-end">
                             <div className="flex items-baseline gap-1">
-                              <span className={`text-lg font-mono font-bold ${assigned.length >= site.min_staffing ? 'text-emerald-500' : 'text-amber-500'}`}>
+                              <span className={`text-lg font-mono font-bold ${assigned.length >= sites.reduce((acc, s) => acc + (s.min_staffing || 0), 0) ? 'text-emerald-500' : 'text-amber-500'}`}>
                                 {assigned.length.toString().padStart(2, '0')}
                               </span>
-                              <span className="text-[10px] text-gray-600 font-mono">/ {site.min_staffing}</span>
+                              <span className="text-[10px] text-gray-600 font-mono">/ {sites.reduce((acc, s) => acc + (s.min_staffing || 0), 0)}</span>
                             </div>
                             <span className="text-[8px] text-gray-600 uppercase font-bold">Personnel</span>
                           </div>
@@ -701,51 +975,46 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
                               <p className="text-[10px] text-gray-700 font-bold uppercase">No Personnel Assigned</p>
                             </div>
                           ) : (
-                            assigned.map(emp => {
-                              const isScheduledForRotation = isRotationWeek(currentWeek, rotationConfigs[emp.id], emp.rotation_group);
-                              const isAssignedToRotation = site.jobsite_name.toLowerCase() === 'rotation';
-                              const isAssignedToOffSite = site.jobsite_name.toLowerCase() === 'off-site';
-                              const isConflict = isScheduledForRotation && !isAssignedToRotation && !isAssignedToOffSite;
+                            assigned.map(({ employee, days }, index) => {
+                              const isScheduledForRotation = isRotationWeek(currentWeek, { ...employee, rotation_config: rotationConfigs[employee.id] });
+                              const isAssignedToRotation = groupName.toLowerCase() === 'rotation';
+                              const isAssignedToOffSite = groupName.toLowerCase() === 'off-site';
+                              const isAssignedToVacation = groupName.toLowerCase() === 'on vacation';
+                              const hasAssignment = days && days.length > 0;
+                              const isConflict = isScheduledForRotation && !isAssignedToRotation && !isAssignedToOffSite && !isAssignedToVacation && !hasAssignment;
                               
-                              const groupColor = emp.rotation_group === 'A' ? 'bg-black border border-white/20' :
-                                               emp.rotation_group === 'B' ? 'bg-red-500' :
-                                               emp.rotation_group === 'C' ? 'bg-yellow-500' :
-                                               emp.rotation_group === 'D' ? 'bg-blue-500' : 'bg-purple-500';
-                              
-                              const textColor = emp.rotation_group === 'A' ? 'text-white' :
-                                              emp.rotation_group === 'B' ? 'text-red-400' :
-                                              emp.rotation_group === 'C' ? 'text-yellow-400' :
-                                              emp.rotation_group === 'D' ? 'text-blue-400' : 'text-purple-400';
+                              const { groupColor, textColor } = getRotationGroupStyles(employee.rotation_group);
 
                               return (
-                                <DraggableEmployee key={emp.id} employee={emp}>
+                                <DraggableEmployee key={`${employee.id}-${days?.join('-') || 'no-days'}-${index}`} employee={employee} days={days} activeId={activeId}>
                                   <div 
-                                    onClick={() => isConflict && setSelectedConflict(emp)}
+                                    onClick={() => isConflict && setSelectedConflict(employee)}
                                     className={`flex items-center justify-between p-2 bg-white/5 rounded-xl border border-white/5 hover:border-emerald-500/30 transition-colors group/item relative ${isConflict ? 'cursor-help' : ''}`}
                                   >
                                     <div className="flex items-center gap-2 min-w-0">
                                       <div className="w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-[10px] font-bold text-emerald-500 border border-emerald-500/20">
-                                        {emp.first_name[0]}{emp.last_name[0]}
+                                        {employee.first_name?.[0]}{employee.last_name?.[0]}
                                       </div>
                                       <div className="min-w-0">
                                         <div className="text-[11px] font-bold text-white truncate flex items-center gap-1.5">
-                                          {emp.first_name} {emp.last_name}
+                                          <div className={`w-2 h-2 rounded-full ${groupColor}`} title={`Rotation Group ${employee.rotation_group || 'None'}`} />
+                                          {employee.first_name} {employee.last_name}
                                           {isConflict && (
-                                            <div className={`w-2 h-2 rounded-full ${groupColor} animate-pulse`} title={`Scheduled for Rotation (Group ${emp.rotation_group || 'Custom'})`} />
+                                            <div className={`w-2 h-2 rounded-full ${groupColor} animate-pulse`} title={`Scheduled for Rotation (Group ${employee.rotation_group || 'Custom'})`} />
                                           )}
                                         </div>
                                         <div className="text-[9px] text-gray-500 truncate flex items-center gap-1.5">
-                                          {emp.job_title}
+                                          {employee.job_title}
                                           {isConflict && (
                                             <span className={`text-[8px] ${textColor} font-bold uppercase tracking-tighter`}>
-                                              {emp.rotation_group ? `Group ${emp.rotation_group}` : 'Rotation'} Conflict
+                                              {employee.rotation_group ? `Group ${employee.rotation_group}` : 'Rotation'} Conflict
                                             </span>
                                           )}
                                         </div>
                                       </div>
                                     </div>
                                     <div className="text-[8px] font-bold text-emerald-500/50 uppercase tracking-widest group-hover/item:text-emerald-500 transition-colors">
-                                      {emp.role}
+                                      {employee.role}
                                     </div>
                                   </div>
                                 </DraggableEmployee>
@@ -757,10 +1026,10 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
                         <div className="px-4 py-3 bg-black/40 border-t border-white/5 flex items-center justify-between">
                           <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
                             <MapPin size={12} />
-                            {site.city}, {site.state}
+                            {sites.length > 1 ? 'Multiple Locations' : `${sites[0].city}, ${sites[0].state}`}
                           </div>
                           <button className="text-[10px] font-bold text-emerald-500 hover:text-emerald-400 transition-colors uppercase tracking-wider">
-                            View Site
+                            View Sites
                           </button>
                         </div>
                       </motion.div>
@@ -772,9 +1041,9 @@ export default function ManpowerView({ employees, jobsites }: ManpowerViewProps)
           )}
         </div>
 
-        <DragOverlay>
+        <DragOverlay style={{ zIndex: 1000 }}>
           {activeId ? (() => {
-            const emp = employees.find(e => e.id === activeId);
+            const emp = fieldEmployees.find(e => e.id === activeId);
             if (!emp) return null;
             return (
               <div className="p-2 bg-emerald-900/50 rounded-xl border border-emerald-500/50 shadow-2xl cursor-grabbing flex items-center gap-2">

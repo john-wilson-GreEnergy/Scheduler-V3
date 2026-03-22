@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Employee, Jobsite } from '../types';
+import { Employee, Jobsite, JobsiteGroup } from '../types';
 import { format, startOfWeek, addWeeks, parseISO } from 'date-fns';
 import { 
   Calendar, 
@@ -18,10 +18,12 @@ import {
   LayoutGrid
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { parseAssignmentNames } from '../utils/assignmentParser';
 
 interface LogisticsForecastProps {
   employees: Employee[];
   jobsites: Jobsite[];
+  jobsiteGroups: JobsiteGroup[];
   onNavigate?: (tab: string) => void;
 }
 
@@ -32,7 +34,8 @@ interface AssignmentData {
   week_start: string;
 }
 
-export default function LogisticsForecast({ employees, jobsites, onNavigate }: LogisticsForecastProps) {
+export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, onNavigate }: LogisticsForecastProps) {
+  const fieldEmployees = useMemo(() => employees.filter(e => e.role !== 'hr'), [employees]);
   const [startWeek, setStartWeek] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [assignments, setAssignments] = useState<AssignmentData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,35 +56,57 @@ export default function LogisticsForecast({ employees, jobsites, onNavigate }: L
       const startStr = format(startWeek, 'yyyy-MM-dd');
       const endStr = format(addWeeks(startWeek, 8), 'yyyy-MM-dd');
       
-      const [weeksRes, assignRes] = await Promise.all([
-        supabase.from('assignment_weeks')
-          .select('*')
+      const { data: weeksRes } = await supabase.from('assignment_weeks')
+          .select('*, items:assignment_items(*)')
           .gte('week_start', startStr)
-          .lt('week_start', endStr),
-        supabase.from('assignments')
-          .select('*')
-          .gte('week_start', startStr)
-          .lt('week_start', endStr)
-      ]);
+          .lt('week_start', endStr);
+
+      const assignmentsMap = new Map<string, any>();
+      weeksRes?.forEach(row => {
+        const key = `${row.employee_fk}-${row.week_start}`;
+        if (!assignmentsMap.has(key)) {
+          assignmentsMap.set(key, { ...row, items: [...(row.items || [])] });
+        } else {
+          const existing = assignmentsMap.get(key);
+          existing.items = [...existing.items, ...(row.items || [])];
+        }
+      });
+      const mergedWeeks = Array.from(assignmentsMap.values());
 
       const combined: AssignmentData[] = [];
       const seen = new Set<string>();
 
       const processRow = (row: any) => {
-        const key = `${row.employee_id || row.email}-${row.week_start}`;
-        if (!seen.has(key) && row.assignment_name) {
-          combined.push({
-            employee_id: row.employee_id,
-            email: row.email,
-            jobsite_name: row.assignment_name,
-            week_start: row.week_start
+        const status = row.status?.toLowerCase().trim();
+        if (status === 'rotation' || status === 'vacation') return;
+
+        const jobsiteNames = parseAssignmentNames(row.assignment_name);
+        
+        if (row.items) {
+          row.items.forEach((item: any) => {
+            const jobsite = jobsites.find(j => j.id === item.jobsite_fk);
+            if (jobsite) {
+              jobsiteNames.push(jobsite.jobsite_name);
+            }
           });
-          seen.add(key);
         }
+
+        jobsiteNames.forEach(name => {
+          if (['vacation', 'rotation'].includes(name.toLowerCase().trim())) return;
+          const key = `${row.employee_fk || row.email}-${row.week_start}-${name}`;
+          if (!seen.has(key)) {
+            combined.push({
+              employee_id: row.employee_fk,
+              email: row.email,
+              jobsite_name: name,
+              week_start: row.week_start
+            });
+            seen.add(key);
+          }
+        });
       };
 
-      weeksRes.data?.forEach(processRow);
-      assignRes.data?.forEach(processRow);
+      mergedWeeks.forEach(processRow);
 
       setAssignments(combined);
     } catch (err) {
@@ -95,46 +120,76 @@ export default function LogisticsForecast({ employees, jobsites, onNavigate }: L
     fetchAssignments();
   }, [startWeek]);
 
+  const getCellData = (siteKey: string, week: string) => {
+    const assigned = assignments.filter(a => {
+      if (a.week_start !== week) return false;
+      
+      const jobsite = jobsites.find(j => j.jobsite_name.trim().toLowerCase() === a.jobsite_name.trim().toLowerCase());
+      const group = jobsite?.group_id ? jobsiteGroups.find(g => g.id === jobsite.group_id) : null;
+      const key = (group ? group.name : jobsite?.jobsite_name || a.jobsite_name).trim().toLowerCase();
+      
+      return key === siteKey.toLowerCase();
+    });
+    
+    const assignedEmployeesMap = new Map<string, Employee>();
+    assigned.forEach(a => {
+      const emp = fieldEmployees.find(e => 
+        (a.email && e.email.toLowerCase() === a.email.toLowerCase()) ||
+        (a.employee_id && e.id === a.employee_id)
+      );
+      if (emp && !assignedEmployeesMap.has(emp.id)) {
+        assignedEmployeesMap.set(emp.id, emp);
+      }
+    });
+    
+    const uniqueEmployees = Array.from(assignedEmployeesMap.values());
+
+    return {
+      count: uniqueEmployees.length,
+      employees: uniqueEmployees
+    };
+  };
+
   const siteGroups = useMemo(() => {
-    const groups: Record<string, { name: string, customer: string, isGroup: boolean }> = {};
+    const groups: Record<string, { name: string, customer: string, isGroup: boolean, requirement: number }> = {};
     
     jobsites.forEach(site => {
       if (site.is_active) {
-        const key = (site.jobsite_group || site.jobsite_name).trim();
+        const group = site.group_id ? jobsiteGroups.find(g => g.id === site.group_id) : null;
+        const key = (group ? group.name : site.jobsite_name).trim();
         if (!groups[key]) {
           groups[key] = {
             name: key,
             customer: site.customer,
-            isGroup: !!site.jobsite_group
+            isGroup: !!group,
+            requirement: 0
           };
         }
+        groups[key].requirement += (site.min_staffing || 0);
       }
     });
 
+    const alwaysShow = ['rotation', 'vacation', 'oklahoma', 'personal'];
     return Object.values(groups)
-      .filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()) || g.customer.toLowerCase().includes(searchQuery.toLowerCase()))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [jobsites, searchQuery]);
+      .filter(g => {
+        const matchesSearch = g.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                              g.customer.toLowerCase().includes(searchQuery.toLowerCase());
+        if (!matchesSearch) return false;
 
-  const getCellData = (siteKey: string, week: string) => {
-    const assigned = assignments.filter(a => 
-      a.week_start === week && 
-      a.jobsite_name.trim().toLowerCase() === siteKey.toLowerCase()
-    );
-    
-    const assignedEmployees = assigned.map(a => {
-      const emp = employees.find(e => 
-        (a.email && e.email.toLowerCase() === a.email.toLowerCase()) ||
-        (a.employee_id && e.employee_id_ref === a.employee_id)
-      );
-      return emp;
-    }).filter(Boolean) as Employee[];
+        if (alwaysShow.includes(g.name.toLowerCase())) return true;
 
-    return {
-      count: assignedEmployees.length,
-      employees: assignedEmployees
-    };
-  };
+        return weeks.some(week => getCellData(g.name, week).count > 0);
+      })
+      .sort((a, b) => {
+        if (a.name.toLowerCase() === 'rotation') return -1;
+        if (b.name.toLowerCase() === 'rotation') return 1;
+        
+        const countA = weeks.reduce((sum, week) => sum + getCellData(a.name, week).count, 0);
+        const countB = weeks.reduce((sum, week) => sum + getCellData(b.name, week).count, 0);
+        
+        return countB - countA;
+      });
+  }, [jobsites, jobsiteGroups, searchQuery, assignments, fieldEmployees, weeks, getCellData]);
 
   const exportToCSV = () => {
     const headers = ['Jobsite', 'Customer', ...weeks.map(w => format(parseISO(w), 'MMM dd'))];
@@ -235,9 +290,9 @@ export default function LogisticsForecast({ employees, jobsites, onNavigate }: L
                   </td>
                   {weeks.map(week => {
                     const data = getCellData(group.name, week);
-                    const isUnderstaffed = data.count < 2;
-                    const isOptimal = data.count === 2;
-                    const isOverstaffed = data.count > 2;
+                    const isUnderstaffed = data.count < group.requirement;
+                    const isOptimal = data.count === group.requirement;
+                    const isOverstaffed = data.count > group.requirement;
 
                     return (
                       <td 
@@ -252,7 +307,7 @@ export default function LogisticsForecast({ employees, jobsites, onNavigate }: L
                           ${isOverstaffed ? 'bg-blue-500/10 border-blue-500/20 text-blue-500 hover:bg-blue-500/20' : ''}
                           ${data.count === 0 ? 'bg-white/5 border-white/5 text-gray-600 opacity-30' : ''}
                         `}>
-                          <span className="text-sm font-black">{data.count}</span>
+                          <span className="text-sm font-black">{data.count}/{group.requirement}</span>
                           <span className="text-[7px] font-bold uppercase opacity-60">Staff</span>
                         </div>
                       </td>
@@ -268,7 +323,18 @@ export default function LogisticsForecast({ employees, jobsites, onNavigate }: L
                   <p className="text-[8px] text-gray-500 uppercase font-bold">Across All Sites</p>
                 </td>
                 {weeks.map(week => {
-                  const total = siteGroups.reduce((acc, group) => acc + getCellData(group.name, week).count, 0);
+                  // Calculate unique employees assigned to any jobsite for this week
+                  const uniqueEmployees = new Set<string>();
+                  assignments.filter(a => a.week_start === week).forEach(a => {
+                    const emp = fieldEmployees.find(e => 
+                      (a.email && e.email.toLowerCase() === a.email.toLowerCase()) ||
+                      (a.employee_id && e.employee_id_ref === a.employee_id)
+                    );
+                    if (emp) uniqueEmployees.add(emp.id);
+                    else if (a.employee_id) uniqueEmployees.add(a.employee_id); // Fallback
+                  });
+                  const total = uniqueEmployees.size;
+                  
                   return (
                     <td key={week} className="p-2 text-center">
                       <div className="mx-auto w-12 h-12 flex flex-col items-center justify-center">
@@ -356,15 +422,15 @@ export default function LogisticsForecast({ employees, jobsites, onNavigate }: L
       <div className="flex items-center gap-6 p-4 bg-black/20 border border-emerald-900/10 rounded-2xl">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-red-500/20 border border-red-500/40" />
-          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Understaffed (&lt;2)</span>
+          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Understaffed</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-emerald-500/20 border border-emerald-500/40" />
-          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Optimal (2)</span>
+          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Optimal</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-blue-500/20 border border-blue-500/40" />
-          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Overstaffed (&gt;2)</span>
+          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Overstaffed</span>
         </div>
       </div>
     </div>

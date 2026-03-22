@@ -2,47 +2,49 @@ export interface Announcement {
   id: string;
   title: string;
   message: string;
-  level: string;
-  start_date: string;
-  end_date: string;
+  start_date?: string;
+  end_date?: string;
   active: boolean;
-  schedule_type?: 'none' | 'first_week_month' | 'last_week_month' | 'first_week_quarter' | 'last_week_quarter';
+  scheduling_mode?: 'custom' | 'weeks';
+  weeks_count?: number;
   is_reminder?: boolean;
-  duration_days?: number;
   created_at?: string;
 }
 
 export interface AssignmentWeek {
   id: string;
   employee_fk: string;
-  employee_id?: string;
   week_start: string;
-  display_value: string;
-  value_type: string;
-  customer: string;
+  status: string;
+  assignment_type?: string;
   created_at: string;
-  first_name?: string;
-  last_name?: string;
-  assignment_name?: string;
+  assignment_items?: AssignmentItem[];
 }
 
 export interface AssignmentItem {
   id: string;
   assignment_week_fk: string;
-  item_order: number;
-  raw_value: string;
-  normalized_value: string;
-  item_type: string;
   jobsite_fk: string;
-  customer: string;
-  jobsite?: Jobsite;
+  days: string[];
+  item_order: number;
+  assignment_type?: string;
+  week_start: string;
+  created_at: string;
+  jobsites?: Jobsite;
+}
+
+export interface JobsiteGroup {
+  id: string;
+  name: string;
+  created_at: string;
 }
 
 export interface Jobsite {
   id: string;
   jobsite_id_ref?: string;
   jobsite_name: string;
-  jobsite_group?: string;
+  group_id?: string; // Replaces jobsite_group
+  jobsite_group?: string; // Alias for backward compatibility
   jobsite_alias?: string;
   customer: string;
   address1?: string;
@@ -62,6 +64,8 @@ export interface Jobsite {
   safety_score?: number;
   min_staffing?: number;
   internal?: boolean;
+  required_credentials?: string;
+  chat_space_id?: string;
 }
 
 export interface Notification {
@@ -98,22 +102,26 @@ export interface PortalAction {
   created_at?: string;
 }
 
-export type Role = 'admin' | 'site_manager' | 'site_lead' | 'bess_tech';
+export type Role = 'admin' | 'super_admin' | 'site_manager' | 'site_lead' | 'bess_tech' | 'hr';
 
 export interface Employee {
   id: string;
-  employee_id_ref: string;
+  employee_id_ref: number;
   email: string;
   first_name: string;
   last_name: string;
   job_title: string;
   role: Role;
+  credentials?: string;
   is_active: boolean;
   auth_user_id: string;
-  rotation_group?: 'A' | 'B' | 'C' | 'D';
+  rotation_group?: string;
   rotation_config?: RotationConfig;
+  uses_group_rotation: boolean;
   updated_by?: string;
   updated_at?: string;
+  portal_role?: string;
+  portal_access?: boolean;
 }
 
 export interface RotationConfig {
@@ -123,6 +131,11 @@ export interface RotationConfig {
   weeks_off: number;
   anchor_date: string;
   is_active: boolean;
+}
+export interface SiteEmployee extends Employee {
+  rotation_config?: RotationConfig;
+  current_assignments?: AssignmentItem[];
+  is_on_rotation?: boolean;
 }
 
 export interface PortalRequest {

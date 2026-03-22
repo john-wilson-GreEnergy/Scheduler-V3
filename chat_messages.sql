@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   user_name TEXT NOT NULL,
   content TEXT NOT NULL,
   jobsite_id TEXT, -- NULL for general chat
+  jobsite_group TEXT, -- NULL for general chat
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -33,3 +34,5 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE chat_messages;
   END IF;
 END $$;
+
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS jobsite_group_name TEXT;

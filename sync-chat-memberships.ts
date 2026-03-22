@@ -116,12 +116,18 @@ async function runSync() {
     groupMap[key].sites.push(site);
   }
 
-  // 2. Get all assignment_weeks in the window
+  // 2. Get all assignment_items in the window
   const { data: assignments } = await supabase
-    .from('assignment_weeks')
-    .select('email, assignment_name, week_start')
-    .gte('week_start', windowStartStr)
-    .lte('week_start', windowEndStr);
+    .from('assignment_items')
+    .select(`
+      assignment_type,
+      assignment_weeks!inner(
+        week_start,
+        employees!fk_assignment_weeks_employee(email)
+      )
+    `)
+    .gte('assignment_weeks.week_start', windowStartStr)
+    .lte('assignment_weeks.week_start', windowEndStr);
 
   if (!assignments) return { message: 'No assignments found in window', synced: 0 };
 
@@ -152,14 +158,14 @@ async function runSync() {
     const desiredEmails = new Set<string>(
       assignments
         .filter(a => {
-          const name = a.assignment_name?.toLowerCase() || '';
-          return name === groupName.toLowerCase() ||
+          const type = a.assignment_type?.toLowerCase() || '';
+          return type === groupName.toLowerCase() ||
             sites.some(s =>
-              name === s.jobsite_name?.toLowerCase() ||
-              name === s.jobsite_group?.toLowerCase()
+              type === s.jobsite_name?.toLowerCase() ||
+              type === s.jobsite_group?.toLowerCase()
             );
         })
-        .map(a => a.email)
+        .map(a => (a.assignment_weeks as any)?.employees?.email)
         .filter(Boolean)
     );
 

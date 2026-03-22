@@ -21,7 +21,7 @@ const GROUP_ANCHOR = '2026-03-09';
  * @param group The rotation group (A, B, C, D)
  * @returns true if it's a rotation week, false if it's a work week.
  */
-export function isRotationWeek(date: Date, config?: RotationConfig, group?: 'A' | 'B' | 'C' | 'D'): boolean {
+export function isRotationWeek(date: Date, config?: RotationConfig, group?: string): boolean {
   // 1. Group-based rotation (Fixed system)
   if (group && ROTATION_GROUPS[group]) {
     const { weeks_on, weeks_off, offset } = ROTATION_GROUPS[group];

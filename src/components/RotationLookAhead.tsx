@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { format, startOfWeek, addWeeks, subWeeks, parseISO } from 'date-fns';
 import { supabase } from '../lib/supabase';
-import { Employee, AssignmentWeek } from '../types';
+import { Employee, AssignmentWeek, Jobsite } from '../types';
 import { ChevronLeft, ChevronRight, RefreshCw, X, Save, Trash2, ArrowRight } from 'lucide-react';
 
 interface RotationLookAheadProps {
@@ -15,30 +15,63 @@ function RotationActionModal({
   employee, 
   weekStart, 
   assignment, 
+  assignments,
   onAdd, 
   onMove, 
   onDelete,
-  allWeeks 
+  onConvert,
+  onSwap,
+  allWeeks,
+  assignmentType,
+  isX
 }: { 
   isOpen: boolean; 
   onClose: () => void; 
-  employee: Employee; 
+  employee?: Employee; 
   weekStart: string; 
   assignment?: AssignmentWeek; 
+  assignments: AssignmentWeek[];
   onAdd: () => void; 
   onMove: (newWeek: string) => void; 
   onDelete: () => void;
+  onConvert?: () => void;
+  onSwap: (targetWeek: string) => void;
   allWeeks: Date[];
+  assignmentType?: 'rotation' | 'jobsite';
+  isX?: boolean;
 }) {
   const [targetWeek, setTargetWeek] = useState<string>('');
+  const [swapTargetAssignment, setSwapTargetAssignment] = useState<AssignmentWeek | null>(null);
 
-  if (!isOpen) return null;
+  // Filter weeks: exclude those already assigned as rotation, vacation, or personal
+  const availableWeeks = allWeeks.filter(w => {
+    const wStr = format(w, 'yyyy-MM-dd');
+    const isAssigned = assignments.some(a =>
+      String(a.employee_fk) === String(employee?.id) &&
+      a.week_start === wStr &&
+      ['rotation', 'vacation', 'personal'].includes(a.status?.toLowerCase() || '')
+    );
+    return !isAssigned;
+  });
+
+  useEffect(() => {
+    if (targetWeek && employee) {
+      const target = assignments.find(a => String(a.employee_fk) === String(employee.id) && a.week_start === targetWeek);
+      setSwapTargetAssignment(target || null);
+    } else {
+      setSwapTargetAssignment(null);
+    }
+  }, [targetWeek, assignments, employee]);
+
+  if (!isOpen || !employee) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="bg-[#0A120F] border border-emerald-900/30 rounded-3xl p-8 w-full max-w-md shadow-2xl">
         <div className="flex justify-between items-center mb-6">
-          <h3 className="text-xl font-bold text-white">Manage Rotation</h3>
+          <h3 className="text-xl font-bold text-white">
+            {assignmentType === 'jobsite' ? 'Convert Jobsite' : 'Manage Rotation'}
+          </h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={20}/></button>
         </div>
         <p className="text-sm text-gray-400 mb-6">
@@ -47,23 +80,35 @@ function RotationActionModal({
         </p>
 
         <div className="space-y-4">
-          {!assignment ? (
-            <button onClick={onAdd} className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-bold rounded-xl">Add Rotation</button>
-          ) : (
-            <>
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-gray-500 uppercase">Move to Week</label>
-                <select value={targetWeek} onChange={(e) => setTargetWeek(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white">
-                  <option value="">Select a week...</option>
-                  {allWeeks.map(w => {
-                    const wStr = format(w, 'yyyy-MM-dd');
-                    return <option key={wStr} value={wStr}>{format(w, 'MMM dd, yyyy')}</option>;
-                  })}
-                </select>
-                <button onClick={() => onMove(targetWeek)} disabled={!targetWeek} className="w-full py-3 bg-blue-500 hover:bg-blue-400 text-white font-bold rounded-xl disabled:opacity-50">Move Rotation</button>
+          {assignmentType === 'jobsite' && onConvert && (
+            <button onClick={onConvert} className="w-full py-3 bg-purple-500 hover:bg-purple-400 text-white font-bold rounded-xl">Convert to Rotation</button>
+          )}
+
+          {assignmentType === 'rotation' && (
+            !assignment || isX ? (
+              <div className="space-y-4">
+                <button onClick={onAdd} className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-bold rounded-xl">Add Rotation</button>
+                {assignment && (
+                  <button onClick={onDelete} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 font-bold rounded-xl flex items-center justify-center gap-2"><Trash2 size={16}/> Delete Assignment</button>
+                )}
               </div>
-              <button onClick={onDelete} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 font-bold rounded-xl flex items-center justify-center gap-2"><Trash2 size={16}/> Delete Rotation</button>
-            </>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase">Swap to Week</label>
+                  <select value={targetWeek} onChange={(e) => setTargetWeek(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white">
+                    <option value="">Select an available week...</option>
+                    {availableWeeks.map(w => {
+                      const wStr = format(w, 'yyyy-MM-dd');
+                      return <option key={wStr} value={wStr}>{format(w, 'MMM dd, yyyy')}</option>;
+                    })}
+                  </select>
+                </div>
+                
+                <button onClick={() => onSwap(targetWeek)} disabled={!targetWeek} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-white font-bold rounded-xl disabled:opacity-50">Swap Rotation</button>
+                <button onClick={onDelete} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 font-bold rounded-xl flex items-center justify-center gap-2"><Trash2 size={16}/> Delete Rotation</button>
+              </div>
+            )
           )}
         </div>
       </div>
@@ -72,10 +117,26 @@ function RotationActionModal({
 }
 
 export default function RotationLookAhead({ employees }: RotationLookAheadProps) {
+  const fieldEmployees = useMemo(() => employees.filter(e => e.role !== 'hr'), [employees]);
   const [weekOffset, setWeekOffset] = useState(0);
   const [assignments, setAssignments] = useState<AssignmentWeek[]>([]);
+  const [jobsites, setJobsites] = useState<Jobsite[]>([]);
   const [loading, setLoading] = useState(false);
-  const [modalState, setModalState] = useState<{isOpen: boolean, employeeId: string, weekStart: string}>({isOpen: false, employeeId: '', weekStart: ''});
+  const [modalState, setModalState] = useState<{
+    isOpen: boolean,
+    employeeId: string,
+    weekStart: string,
+    assignmentType?: 'rotation' | 'jobsite',
+    isX?: boolean
+  }>({isOpen: false, employeeId: '', weekStart: '', isX: false});
+
+  useEffect(() => {
+    const fetchJobsites = async () => {
+      const { data } = await supabase.from('jobsites').select('*');
+      if (data) setJobsites(data);
+    };
+    fetchJobsites();
+  }, []);
 
   const fetchAssignments = useCallback(async (offset: number) => {
     setLoading(true);
@@ -84,7 +145,7 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
 
     const { data, error } = await supabase
       .from('assignment_weeks')
-      .select('*')
+      .select('*, assignment_items(*)')
       .gte('week_start', format(start, 'yyyy-MM-dd'))
       .lte('week_start', format(end, 'yyyy-MM-dd'))
       .order('week_start');
@@ -92,40 +153,160 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
     if (error) {
       console.error('Error fetching assignments:', error);
     } else {
+      console.log('DEBUG: fetched assignments', data);
       setAssignments(data || []);
+      if (data && data.length > 0) {
+        console.log('DEBUG: Assignment sample', {
+          sample: data[0],
+          keys: Object.keys(data[0]),
+          employee_fk: data[0].employee_fk,
+          week_start: data[0].week_start,
+          items: data[0].assignment_items,
+          firstItem: data[0].assignment_items && data[0].assignment_items[0]
+        });
+      } else {
+        console.log('DEBUG: No assignments found for range');
+      }
     }
     setLoading(false);
   }, []);
 
   const handleAddRotation = async (employeeId: string, weekStart: string) => {
-    const emp = employees.find(e => e.employee_id_ref === employeeId);
+    const emp = fieldEmployees.find(e => e.id === employeeId);
     if (!emp) return;
-    const { error } = await supabase.from('assignment_weeks').insert({
-      employee_id: emp.employee_id_ref,
+
+    const existing = assignments.filter(a => String(a.employee_fk) === String(employeeId) && a.week_start === weekStart);
+    
+    if (existing.length > 0) {
+        await cleanupAssignmentsForWeek(employeeId, weekStart);
+        fetchAssignments(weekOffset);
+        setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined});
+        return;
+    }
+
+    const rotationJobsite = jobsites.find(j => j.jobsite_name === 'Rotation');
+    if (!rotationJobsite) {
+        console.error('Rotation jobsite not found');
+        return;
+    }
+
+    const { data: weekData, error: weekError } = await supabase.from('assignment_weeks').insert({
+      employee_fk: emp.id,
       email: emp.email,
       week_start: weekStart,
-      assignment_name: 'Internal',
+      assignment_name: null,
+      status: 'rotation',
       value_type: 'rotation',
       first_name: emp.first_name,
       last_name: emp.last_name
+    }).select().single();
+
+    if (weekError) {
+        console.error(weekError);
+        return;
+    }
+
+    const { error: itemError } = await supabase.from('assignment_items').insert({
+        assignment_week_fk: weekData.id,
+        jobsite_fk: rotationJobsite.id,
+        days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+        item_order: 1
     });
-    if (error) console.error(error);
+
+    if (itemError) console.error(itemError);
     else fetchAssignments(weekOffset);
-    setModalState({isOpen: false, employeeId: '', weekStart: ''});
+    setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined});
   };
 
   const handleMoveRotation = async (assignmentId: string, newWeek: string) => {
+    const assignment = assignments.find(a => a.id === assignmentId);
+    if (!assignment) return;
+    
     const { error } = await supabase.from('assignment_weeks').update({ week_start: newWeek }).eq('id', assignmentId);
-    if (error) console.error(error);
-    else fetchAssignments(weekOffset);
-    setModalState({isOpen: false, employeeId: '', weekStart: ''});
+    if (error) {
+        console.error(error);
+        return;
+    }
+    
+    await cleanupAssignmentsForWeek(String(assignment.employee_fk), newWeek);
+    fetchAssignments(weekOffset);
+    setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined});
+  };
+
+  const handleConvertRotation = async (assignmentId: string) => {
+    const assignment = assignments.find(a => a.id === assignmentId);
+    if (!assignment) return;
+
+    const { error } = await supabase.from('assignment_weeks').update({ 
+      assignment_name: null,
+      status: 'rotation',
+      value_type: 'rotation'
+    }).eq('id', assignmentId);
+    
+    if (error) {
+        console.error(error);
+        return;
+    }
+    
+    await cleanupAssignmentsForWeek(String(assignment.employee_fk), assignment.week_start);
+    fetchAssignments(weekOffset);
+    setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined});
+  };
+
+  const handleSwapRotation = async (assignmentId: string, targetWeek: string) => {
+    const sourceAssignment = assignments.find(a => a.id === assignmentId);
+    const targetAssignment = assignments.find(a => String(a.employee_fk) === String(sourceAssignment?.employee_fk) && a.week_start === targetWeek);
+
+    if (!sourceAssignment) return;
+
+    // Swap week_start
+    if (targetAssignment) {
+        // Swap
+        await supabase.from('assignment_weeks').update({ week_start: targetWeek }).eq('id', sourceAssignment.id);
+        await supabase.from('assignment_weeks').update({ week_start: sourceAssignment.week_start }).eq('id', targetAssignment.id);
+    } else {
+        // Move
+        await supabase.from('assignment_weeks').update({ week_start: targetWeek }).eq('id', sourceAssignment.id);
+    }
+    
+    // Cleanup both weeks
+    await cleanupAssignmentsForWeek(String(sourceAssignment.employee_fk), targetWeek);
+    await cleanupAssignmentsForWeek(String(sourceAssignment.employee_fk), sourceAssignment.week_start);
+
+    fetchAssignments(weekOffset);
+    setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined});
   };
 
   const handleDeleteRotation = async (assignmentId: string) => {
     const { error } = await supabase.from('assignment_weeks').delete().eq('id', assignmentId);
     if (error) console.error(error);
     else fetchAssignments(weekOffset);
-    setModalState({isOpen: false, employeeId: '', weekStart: ''});
+    setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined});
+  };
+
+  const cleanupAssignmentsForWeek = async (employeeId: string, weekStart: string) => {
+    const empAssignments = assignments.filter(a => String(a.employee_fk) === String(employeeId) && a.week_start === weekStart);
+    if (empAssignments.length === 0) return null;
+
+    const [first, ...rest] = empAssignments;
+
+    // Delete the rest
+    for (const assignment of rest) {
+        await supabase.from('assignment_weeks').delete().eq('id', assignment.id);
+    }
+
+    // Update the first one to be a rotation
+    const { data, error } = await supabase.from('assignment_weeks').update({
+        status: 'rotation',
+        value_type: 'rotation',
+        assignment_name: null
+    }).eq('id', first.id).select().single();
+
+    if (error) {
+        console.error(error);
+        return null;
+    }
+    return data;
   };
 
   useEffect(() => {
@@ -148,12 +329,12 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
   const [filterGroup, setFilterGroup] = useState<string>('All');
 
   const filteredEmployees = useMemo(() => {
-    return employees.filter(emp => {
+    return fieldEmployees.filter(emp => {
       const matchesSearch = `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesGroup = filterGroup === 'All' || emp.rotation_group === filterGroup;
       return matchesSearch && matchesGroup;
     });
-  }, [employees, searchTerm, filterGroup]);
+  }, [fieldEmployees, searchTerm, filterGroup]);
 
   // ... inside return ...
   return (
@@ -210,13 +391,26 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
                   {weeks.map(week => {
                     const weekStr = format(week, 'yyyy-MM-dd');
                     const weekAssignments = assignments.filter(
-                      a => String(a.employee_id) === String(emp.employee_id_ref) && a.week_start === weekStr
+                      a => String(a.employee_fk) === String(emp.id) && a.week_start === weekStr
                     );
                     
                     const symbols = weekAssignments.map(a => {
-                      if (a.assignment_name === 'Rotation') return 'R';
-                      if (a.value_type === 'jobsite') return '⚡';
-                      return '?';
+                      // Check assignment_items for assignment_type
+                      const item = a.assignment_items && a.assignment_items[0];
+                      const type = item?.assignment_type?.toLowerCase();
+                      const status = a.status?.toLowerCase();
+                      
+                      // Check for rotation
+                      if (status === 'rotation' || type === 'rotation') return 'R';
+                      // Check for vacation
+                      if (status === 'vacation' || type === 'vacation') return 'V';
+                      // Check for personal
+                      if (status === 'personal' || type === 'personal') return 'P';
+                      
+                      // If it's a jobsite (and not one of the above), return lightning
+                      if (type) return '⚡';
+                      
+                      return 'X';
                     });
                     
                     const symbol = symbols.length > 0 ? symbols.join(' ') : '-';
@@ -224,7 +418,15 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
                     return (
                       <td key={week.toString()} className="p-3 text-center text-xs text-gray-400 min-w-[100px]">
                         <button 
-                          onClick={() => setModalState({isOpen: true, employeeId: emp.employee_id_ref, weekStart: weekStr})}
+                          onClick={() => {
+                            if (symbol === 'R') {
+                              setModalState({isOpen: true, employeeId: emp.id, weekStart: weekStr, assignmentType: 'rotation'});
+                            } else if (symbol === '⚡') {
+                              setModalState({isOpen: true, employeeId: emp.id, weekStart: weekStr, assignmentType: 'jobsite'});
+                            } else if (symbol === '-' || symbol === 'X') {
+                              setModalState({isOpen: true, employeeId: emp.id, weekStart: weekStr, assignmentType: 'rotation', isX: symbol === 'X'});
+                            }
+                          }}
                           className="hover:bg-emerald-500/20 px-2 py-1 rounded-lg transition-all"
                         >
                           {symbol}
@@ -238,22 +440,33 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
           </table>
         </div>
       )}
-      <RotationActionModal 
+        <RotationActionModal 
         isOpen={modalState.isOpen}
-        onClose={() => setModalState({isOpen: false, employeeId: '', weekStart: ''})}
-        employee={employees.find(e => e.employee_id_ref === modalState.employeeId)!}
+        onClose={() => setModalState({isOpen: false, employeeId: '', weekStart: '', assignmentType: undefined})}
+        employee={fieldEmployees.find(e => e.id === modalState.employeeId)}
         weekStart={modalState.weekStart}
-        assignment={assignments.find(a => String(a.employee_id) === String(modalState.employeeId) && a.week_start === modalState.weekStart)}
+        assignment={assignments.find(a => String(a.employee_fk) === String(modalState.employeeId) && a.week_start === modalState.weekStart)}
+        assignments={assignments}
         onAdd={() => handleAddRotation(modalState.employeeId, modalState.weekStart)}
         onMove={(newWeek) => {
-          const assignment = assignments.find(a => String(a.employee_id) === String(modalState.employeeId) && a.week_start === modalState.weekStart);
+          const assignment = assignments.find(a => String(a.employee_fk) === String(modalState.employeeId) && a.week_start === modalState.weekStart);
           if (assignment) handleMoveRotation(assignment.id, newWeek);
         }}
+        onConvert={() => {
+          const assignment = assignments.find(a => String(a.employee_fk) === String(modalState.employeeId) && a.week_start === modalState.weekStart);
+          if (assignment) handleConvertRotation(assignment.id);
+        }}
+        onSwap={(targetWeek) => {
+          const assignment = assignments.find(a => String(a.employee_fk) === String(modalState.employeeId) && a.week_start === modalState.weekStart);
+          if (assignment) handleSwapRotation(assignment.id, targetWeek);
+        }}
         onDelete={() => {
-          const assignment = assignments.find(a => String(a.employee_id) === String(modalState.employeeId) && a.week_start === modalState.weekStart);
+          const assignment = assignments.find(a => String(a.employee_fk) === String(modalState.employeeId) && a.week_start === modalState.weekStart);
           if (assignment) handleDeleteRotation(assignment.id);
         }}
         allWeeks={weeks}
+        assignmentType={modalState.assignmentType}
+        isX={modalState.isX}
       />
     </div>
   );

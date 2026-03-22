@@ -1,11 +1,15 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, AreaChart, Area
 } from 'recharts';
 import { Jobsite, Employee } from '../types';
-import { TrendingUp, Users, MapPin, AlertCircle, Clock, ArrowUpRight, ArrowDownRight, Activity, Zap } from 'lucide-react';
+import { TrendingUp, Users, MapPin, AlertCircle, Clock, ArrowUpRight, ArrowDownRight, Activity, Zap, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
+import { supabase } from '../lib/supabase';
+import { isRotationWeek } from '../utils/rotation';
+import { startOfWeek, format, subWeeks, parseISO } from 'date-fns';
+import { parseAssignmentNames } from '../utils/assignmentParser';
 
 interface AnalyticsProps {
   employees: Employee[];
@@ -13,6 +17,131 @@ interface AnalyticsProps {
 }
 
 export default function Analytics({ employees, jobsites }: AnalyticsProps) {
+  const [stats, setStats] = useState({ 
+    assigned: { count: 0, change: 0, trend: 'up' as 'up' | 'down', status: 'Stable' }, 
+    rotation: { count: 0, change: 0, trend: 'up' as 'up' | 'down', status: 'Stable' }, 
+    vacation: { count: 0, change: 0, trend: 'up' as 'up' | 'down', status: 'Stable' }, 
+    training: { count: 0, change: 0, trend: 'up' as 'up' | 'down', status: 'Stable' }, 
+    unassigned: { count: 0, change: 0, trend: 'up' as 'up' | 'down', status: 'Stable' },
+    jobsiteStaffing: {} as Record<string, number>
+  });
+
+  const rotationJobsiteId = useMemo(() => jobsites.find(j => j.jobsite_name.toLowerCase() === 'rotation')?.id, [jobsites]);
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      const currentWeekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
+      const prevWeekStart = format(subWeeks(parseISO(currentWeekStart), 1), 'yyyy-MM-dd');
+
+      const [currentRes, prevRes] = await Promise.all([
+        supabase.from('assignment_weeks').select('*, items:assignment_items(*)').eq('week_start', currentWeekStart),
+        supabase.from('assignment_weeks').select('*, items:assignment_items(*)').eq('week_start', prevWeekStart)
+      ]);
+      
+      console.log('Analytics Debug: Data fetched successfully');
+      
+      if (currentRes.data && prevRes.data) {
+        const activeFieldEmployees = employees.filter(e => e.is_active && e.role !== 'hr');
+
+        const mergeAssignments = (data: any[]) => {
+          const assignmentsMap = new Map<string, any>();
+          data?.forEach(row => {
+            const key = `${row.employee_fk}-${row.week_start}`;
+            if (!assignmentsMap.has(key)) {
+              assignmentsMap.set(key, { ...row, items: [...(row.items || [])] });
+            } else {
+              const existing = assignmentsMap.get(key);
+              existing.items = [...existing.items, ...(row.items || [])];
+            }
+          });
+          return Array.from(assignmentsMap.values());
+        };
+
+        const currentMerged = mergeAssignments(currentRes.data);
+        const prevMerged = mergeAssignments(prevRes.data);
+
+        const calculateStats = (data: any[]) => {
+          const employeeAssignments: Record<string, any[]> = {};
+          const jobsiteStaffing: Record<string, number> = {};
+          
+          data.forEach(asgn => {
+            const employee = activeFieldEmployees.find(e => e.id === asgn.employee_fk);
+            if (!employee) return;
+            if (!employeeAssignments[employee.id]) employeeAssignments[employee.id] = [];
+            employeeAssignments[employee.id].push(asgn);
+
+            // Count staffing per jobsite
+            asgn.items?.forEach((item: any) => {
+              if (item.jobsite_fk) {
+                jobsiteStaffing[item.jobsite_fk] = (jobsiteStaffing[item.jobsite_fk] || 0) + 1;
+              }
+            });
+          });
+
+          const assigned = new Set<string>();
+          const rotation = new Set<string>();
+          const vacation = new Set<string>();
+          const training = new Set<string>();
+
+          Object.entries(employeeAssignments).forEach(([employeeId, assignments]) => {
+            let isRotation = false;
+            let isVacation = false;
+            let isTraining = false;
+            let hasJobsiteAssignment = false;
+
+            assignments.forEach(asgn => {
+              const status = asgn.status?.toLowerCase().trim();
+              const assignmentNames = parseAssignmentNames(asgn.assignment_name);
+              
+              // Check if rotation jobsite ID is in items
+              const hasRotationJobsite = asgn.items?.some((i: any) => i.jobsite_fk === rotationJobsiteId);
+              
+              if (status === 'rotation' || assignmentNames.includes('rotation') || hasRotationJobsite) isRotation = true;
+              if (status === 'vacation' || assignmentNames.includes('vacation')) isVacation = true;
+              if (status === 'training' || assignmentNames.includes('training')) isTraining = true;
+              
+              if (asgn.items && asgn.items.length > 0) {
+                hasJobsiteAssignment = true;
+              } else if (assignmentNames.length > 0 && !['vacation', 'rotation', 'training'].includes(assignmentNames[0].toLowerCase())) {
+                hasJobsiteAssignment = true;
+              }
+            });
+
+            if (isRotation) rotation.add(employeeId);
+            else if (isVacation) vacation.add(employeeId);
+            else if (isTraining) training.add(employeeId);
+            else if (hasJobsiteAssignment) assigned.add(employeeId);
+          });
+
+          const totalActiveEmployees = activeFieldEmployees.length;
+          const unassigned = Math.max(0, totalActiveEmployees - (assigned.size + rotation.size + vacation.size + training.size));
+          return { assigned: assigned.size, rotation: rotation.size, vacation: vacation.size, training: training.size, unassigned, jobsiteStaffing };
+        };
+
+        const currentStats = calculateStats(currentMerged);
+        const prevStats = calculateStats(prevMerged);
+
+        const getTrend = (curr: number, prev: number) => {
+          const change = prev === 0 ? 100 : ((curr - prev) / prev) * 100;
+          return {
+            change: Math.abs(change),
+            trend: change >= 0 ? 'up' as const : 'down' as const
+          };
+        };
+
+        setStats({
+          assigned: { ...getTrend(currentStats.assigned, prevStats.assigned), count: currentStats.assigned, status: 'Stable' },
+          rotation: { ...getTrend(currentStats.rotation, prevStats.rotation), count: currentStats.rotation, status: 'Stable' },
+          vacation: { ...getTrend(currentStats.vacation, prevStats.vacation), count: currentStats.vacation, status: 'Stable' },
+          training: { ...getTrend(currentStats.training, prevStats.training), count: currentStats.training, status: 'Stable' },
+          unassigned: { ...getTrend(currentStats.unassigned, prevStats.unassigned), count: currentStats.unassigned, status: currentStats.unassigned > 0 ? 'Needs Action' : 'Stable' },
+          jobsiteStaffing: currentStats.jobsiteStaffing
+        });
+      }
+    };
+    fetchStats();
+  }, [employees]);
+
   const staffingData = useMemo(() => [
     { name: 'Mon', staffed: 45, required: 50 },
     { name: 'Tue', staffed: 48, required: 50 },
@@ -38,38 +167,62 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
   return (
     <div className="space-y-8">
       {/* Top Stats - Bento Style */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         <StatCard 
-          title="Total Workforce" 
-          value={employees.length.toString()} 
-          change="+4.2%" 
-          trend="up"
+          title="Assigned Employees" 
+          value={stats.assigned.count.toString()} 
+          change={`${stats.assigned.change.toFixed(1)}%`} 
+          trend={stats.assigned.trend}
           icon={<Users className="text-emerald-500" />} 
-          description="Active personnel in system"
+          description="Assigned for current week"
         />
         <StatCard 
-          title="Active Jobsites" 
-          value={jobsites.length.toString()} 
-          change="+2" 
-          trend="up"
-          icon={<MapPin className="text-blue-500" />} 
-          description="Operational project sites"
+          title="On Rotation" 
+          value={stats.rotation.count.toString()} 
+          change={stats.rotation.status} 
+          trend={stats.rotation.trend}
+          icon={<RefreshCw className="text-blue-500" />} 
+          description="Employees on rotation"
         />
         <StatCard 
-          title="Utilization" 
-          value="94.8%" 
-          change="-1.2%" 
-          trend="down"
-          icon={<Activity className="text-amber-500" />} 
-          description="Resource allocation efficiency"
+          title="Unassigned" 
+          value={stats.unassigned.count.toString()} 
+          change={stats.unassigned.status} 
+          trend={stats.unassigned.trend}
+          icon={<AlertCircle className="text-rose-500" />} 
+          description="Employees without assignment"
         />
         <StatCard 
-          title="Safety Score" 
-          value="98/100" 
-          change="Stable" 
-          trend="up"
-          icon={<Zap className="text-purple-500" />} 
-          description="Compliance and safety rating"
+          title="On Vacation" 
+          value={stats.vacation.count.toString()} 
+          change={stats.vacation.status} 
+          trend={stats.vacation.trend}
+          icon={<Clock className="text-amber-500" />} 
+          description="Employees on vacation"
+        />
+        
+        {/* Rotation Groups Status */}
+        <div className="bg-[#0A120F] border border-emerald-900/20 p-6 rounded-[2rem] shadow-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-4">Rotation Groups</div>
+          <div className="grid grid-cols-2 gap-2">
+            {['A', 'B', 'C', 'D'].map((group) => {
+              const isRotation = isRotationWeek(new Date(), undefined, group as any);
+              return (
+                <div key={group} className={`flex items-center gap-2 px-2 py-1 rounded-lg ${isRotation ? 'bg-emerald-500/10' : 'bg-white/5'}`}>
+                  <div className={`w-2 h-2 rounded-full ${isRotation ? 'bg-emerald-500' : 'bg-gray-600'}`} />
+                  <span className={`text-xs font-bold ${isRotation ? 'text-white' : 'text-gray-500'}`}>Group {group}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <StatCard 
+          title="In Training" 
+          value={stats.training.count.toString()} 
+          change={stats.training.status} 
+          trend={stats.training.trend}
+          icon={<Activity className="text-purple-500" />} 
+          description="Employees in training"
         />
       </div>
 
@@ -196,7 +349,7 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-emerald-900/10">
-              {jobsites.filter(s => s.is_active).map((site) => (
+              {jobsites.filter(s => s.is_active && (stats.jobsiteStaffing[s.id] || 0) > 0).map((site) => (
                 <tr key={site.id} className="hover:bg-emerald-500/[0.02] transition-colors group">
                   <td className="px-8 py-6">
                     <div className="text-white font-bold group-hover:text-emerald-400 transition-colors">{site.jobsite_name}</div>
@@ -208,13 +361,26 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
                   <td className="px-8 py-6">
                     <div className="flex items-center gap-4">
                       <div className="flex-1 max-w-[120px] h-1.5 bg-white/5 rounded-full overflow-hidden">
-                        <motion.div 
-                          initial={{ width: 0 }}
-                          animate={{ width: '85%' }}
-                          className="h-full bg-emerald-500 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.3)]" 
-                        />
+                        {(() => {
+                          const actual = stats.jobsiteStaffing[site.id] || 0;
+                          const required = site.min_staffing || 1;
+                          const efficiency = Math.min(100, (actual / required) * 100);
+                          return (
+                            <motion.div 
+                              initial={{ width: 0 }}
+                              animate={{ width: `${efficiency}%` }}
+                              className={`h-full rounded-full shadow-[0_0_10px_rgba(16,185,129,0.3)] ${efficiency < 100 ? 'bg-amber-500' : 'bg-emerald-500'}`} 
+                            />
+                          );
+                        })()}
                       </div>
-                      <span className="text-xs text-white font-mono font-bold">85%</span>
+                      <span className="text-xs text-white font-mono font-bold">
+                        {(() => {
+                          const actual = stats.jobsiteStaffing[site.id] || 0;
+                          const required = site.min_staffing || 1;
+                          return `${Math.round((actual / required) * 100)}%`;
+                        })()}
+                      </span>
                     </div>
                   </td>
                   <td className="px-8 py-6">

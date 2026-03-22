@@ -171,7 +171,7 @@ export default function NotificationPanel({ employeeId, onClose }: NotificationP
                         {format(new Date(notification.created_at), 'MMM dd, HH:mm')}
                       </span>
                     </div>
-                    <p className="text-sm text-gray-400 leading-relaxed mb-3">
+                    <p className="text-sm text-gray-400 leading-relaxed mb-3 whitespace-pre-wrap">
                       {notification.message}
                     </p>
                     <div className="flex items-center gap-3">

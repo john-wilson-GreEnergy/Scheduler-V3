@@ -6,7 +6,7 @@ export const submitSurvey = async (
   targetId: string,
   surveyType: SurveyType,
   weekStartDate: string,
-  scores: Record<string, number>,
+  scores: Record<string, number> | string,
   comments: { well: string; improve: string; notes: string }
 ) => {
   // 1. Check if a survey already exists for this pair this week
@@ -30,7 +30,7 @@ export const submitSurvey = async (
       rater_id: raterId,
       target_id: targetId,
       week_start_date: weekStartDate,
-      scores,
+      scores: typeof scores === 'string' ? scores : JSON.stringify(scores),
       comments
     })
     .select()

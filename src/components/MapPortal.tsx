@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import { Jobsite, Employee, AssignmentItem } from '../types';
+import { Jobsite, Employee, AssignmentItem, JobsiteGroup } from '../types';
 import { MapPin, Navigation, Phone, User, ChevronRight, ChevronDown, Filter, ArrowUpDown, Users, Maximize2, RefreshCw, Calendar } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
@@ -47,6 +47,7 @@ const createCustomIcon = (color: string) => {
 
 interface MapPortalProps {
   jobsites: Jobsite[];
+  jobsiteGroups: JobsiteGroup[];
   employees?: Employee[];
 }
 
@@ -62,7 +63,8 @@ interface OffSitePersonnel {
   employees: Employee[];
 }
 
-export default function MapPortal({ jobsites, employees: providedEmployees }: MapPortalProps) {
+export default function MapPortal({ jobsites, jobsiteGroups, employees: providedEmployees }: MapPortalProps) {
+  const fieldEmployees = useMemo(() => (providedEmployees || []).filter(e => e.role !== 'hr'), [providedEmployees]);
   const [staffing, setStaffing] = useState<Record<string, SiteStaffing>>({});
   const [offSite, setOffSite] = useState<Record<string, OffSitePersonnel>>({});
   const [legendOpen, setLegendOpen] = useState(true);
@@ -83,26 +85,22 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
 
   useEffect(() => {
     fetchStaffingData();
-  }, [jobsites, providedEmployees, selectedWeek]);
+  }, [jobsites, fieldEmployees, selectedWeek]);
 
   const fetchStaffingData = async () => {
     // Use selected week
     const weekStr = selectedWeek;
     const weekStartObj = new Date(selectedWeek + 'T00:00:00');
 
-    // Fetch current assignments from both tables and employees (if not provided)
+    // Fetch current assignments from assignment_weeks table
     const queries: any[] = [
       supabase
         .from('assignment_weeks')
         .select('*, items:assignment_items(*)')
-        .eq('week_start', weekStr),
-      supabase
-        .from('assignments')
-        .select('*')
         .eq('week_start', weekStr)
     ];
 
-    if (!providedEmployees) {
+    if (fieldEmployees.length === 0 && !providedEmployees) {
       queries.push(
         supabase
           .from('employees')
@@ -120,17 +118,15 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
 
     const results = await Promise.all(queries);
     const weeksRes = results[0];
-    const legacyRes = results[1];
-    const employeesRes = providedEmployees ? { data: providedEmployees, error: null } : results[2];
-    const rotRes = results[providedEmployees ? 2 : 3];
+    const employeesRes = { data: fieldEmployees, error: null };
+    const rotRes = results[1];
 
-    if (weeksRes.error || legacyRes.error || employeesRes.error) {
-      console.error('Error fetching staffing data:', weeksRes.error || legacyRes.error || employeesRes.error);
+    if (weeksRes.error || employeesRes.error) {
+      console.error('Error fetching staffing data:', weeksRes.error || employeesRes.error);
       return;
     }
 
     const weeks = weeksRes.data || [];
-    const legacyAssignments = legacyRes.data || [];
     const allEmployees = employeesRes.data || [];
     const rotationConfigsMap: Record<string, RotationConfig> = {};
     if (rotRes.data) {
@@ -147,7 +143,8 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
         'site manager': 1,
         'site lead': 2,
         'bess tech': 3,
-        'admin': 0
+        'admin': 0,
+        'hr': 4
       };
 
       const OFF_SITE_STATUSES = ['rotation', 'vacation', 'personal', 'training', 'sick', 'holiday', 'home office', 'oklahoma'];
@@ -170,8 +167,8 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
         if (!site) return;
 
         // If site is part of a group, apply to all sites in that group
-        const sitesToUpdate = site.jobsite_group 
-          ? jobsites.filter(s => s.jobsite_group === site.jobsite_group)
+        const sitesToUpdate = site.group_id 
+          ? jobsites.filter(s => s.group_id === site.group_id)
           : [site];
 
         sitesToUpdate.forEach(s => {
@@ -230,7 +227,8 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
             }
 
             // Check if it matches a group name directly
-            const groupSites = jobsites.filter(j => j.jobsite_group && j.jobsite_group.toLowerCase() === trimmedName);
+            const group = jobsiteGroups.find(g => g.name.toLowerCase() === trimmedName);
+            const groupSites = group ? jobsites.filter(j => j.group_id === group.id) : [];
             
             if (groupSites.length > 0) {
               groupSites.forEach(s => addToSite(s.id, employee));
@@ -259,7 +257,6 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
       };
 
       weeks.forEach(processWeek);
-      legacyAssignments.forEach(processWeek);
 
       // Sort by seniority and calculate staffing levels
       Object.keys(staffingMap).forEach(siteId => {
@@ -311,7 +308,8 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
     j.lat !== undefined && 
     j.lng !== null && 
     j.lng !== undefined && 
-    j.is_active
+    j.is_active &&
+    (staffing[j.id]?.employees?.length > 0)
   );
 
   const legendItems = useMemo(() => {
@@ -319,11 +317,11 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
     const ungrouped: Jobsite[] = [];
 
     activeJobsites.forEach(site => {
-      if (site.jobsite_group) {
-        if (!groups[site.jobsite_group]) {
-          groups[site.jobsite_group] = { sites: [], staffingLevel: 0, customer: site.customer };
+      if (site.group_id) {
+        if (!groups[site.group_id]) {
+          groups[site.group_id] = { sites: [], staffingLevel: 0, customer: site.customer };
         }
-        groups[site.jobsite_group].sites.push(site);
+        groups[site.group_id].sites.push(site);
       } else {
         ungrouped.push(site);
       }
@@ -332,11 +330,12 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
     const result: any[] = [];
 
     // Add groups
-    Object.entries(groups).forEach(([groupName, data]) => {
+    Object.entries(groups).forEach(([groupId, data]) => {
       // Calculate average staffing for the group
       const totalLevel = data.sites.reduce((acc, s) => acc + (staffing[s.id]?.staffingLevel || 0), 0);
+      const groupName = jobsiteGroups.find(g => g.id === groupId)?.name || 'Unknown Group';
       result.push({
-        id: `group-${groupName}`,
+        id: `group-${groupId}`,
         jobsite_name: groupName,
         customer: data.customer,
         staffingLevel: totalLevel / data.sites.length,
@@ -366,7 +365,8 @@ export default function MapPortal({ jobsites, employees: providedEmployees }: Ma
 
   const handleSiteClick = (item: any) => {
     if (item.isGroup) {
-      const groupSites = activeJobsites.filter(s => s.jobsite_group === item.jobsite_name);
+      const groupId = item.id.replace('group-', '');
+      const groupSites = activeJobsites.filter(s => s.group_id === groupId);
       if (groupSites.length > 0) {
         const bounds = L.latLngBounds(groupSites.map(s => [s.lat!, s.lng!]));
         setMapTarget({ bounds: bounds.pad(0.2) });

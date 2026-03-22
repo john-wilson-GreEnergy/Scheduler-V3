@@ -19,7 +19,7 @@ async function startServer() {
     const { to, subject, employeeName, updateType, jobsiteName, weekStartDate, updateDetails, previousAssignment, newAssignment, travelDate } = req.body;
     try {
       const data = await resend.emails.send({
-        from: 'GreEnergy Scheduler <onboarding@resend.dev>',
+        from: 'GreEnergy Scheduler <notifications@greenergyresources.org>',
         to: to,
         subject: subject,
         html: `
@@ -29,15 +29,8 @@ async function startServer() {
             <p style="font-size: 16px; line-height: 1.5;">This is an automated notification from the GreEnergy Scheduler system.</p>
             <p style="font-size: 16px; line-height: 1.5;">Your schedule information has been updated. Please review the details below.</p>
             
-            <div style="margin: 20px 0; padding: 15px; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f9fafb;">
-              <p style="margin: 5px 0;"><strong>Update Type:</strong> ${updateType}</p>
-              <p style="margin: 5px 0;"><strong>Employee:</strong> ${employeeName}</p>
-              <p style="margin: 5px 0;"><strong>Jobsite:</strong> ${jobsiteName}</p>
-              <p style="margin: 5px 0;"><strong>Week Of:</strong> ${weekStartDate}</p>
-              <p style="margin: 5px 0;"><strong>Details:</strong> ${updateDetails}</p>
-              ${previousAssignment ? `<p style="margin: 5px 0;"><strong>Previous Assignment:</strong> ${previousAssignment}</p>` : ''}
-              ${newAssignment ? `<p style="margin: 5px 0;"><strong>New Assignment:</strong> ${newAssignment}</p>` : ''}
-              ${travelDate ? `<p style="margin: 5px 0;"><strong>Travel Date:</strong> ${travelDate}</p>` : ''}
+            <div style="margin: 20px 0; padding: 15px; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f9fafb; white-space: pre-wrap; font-family: monospace;">
+              ${updateDetails}
             </div>
 
             <p style="font-size: 16px; line-height: 1.5;">If you have questions regarding this change, please contact your Site Manager or the scheduling administrator.</p>

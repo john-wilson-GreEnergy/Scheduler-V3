@@ -3,94 +3,157 @@ import { supabase } from '../lib/supabase';
 import { SurveyModal } from './SurveyModal';
 import { TargetSelectionModal } from './TargetSelectionModal';
 import { Employee } from '../types';
-import { format } from 'date-fns';
+import { format, startOfWeek } from 'date-fns';
 import { Plus, MessageSquare } from 'lucide-react';
 import { parseAssignmentNames } from '../utils/assignmentParser';
+
+import { Role } from '../types';
+import { SurveyType } from '../types/surveys';
 
 interface SurveyInitiatorProps {
   userId: string;
   email: string;
-  userRole: 'admin' | 'manager' | 'employee';
+  userRole: Role;
+  jobsiteGroup?: string;
+  weekStartDate?: string;
 }
 
-export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email, userRole }) => {
+const getSurveyType = (raterRole: Role, targetRole: Role): SurveyType | null => {
+  if (raterRole === 'bess_tech') {
+    if (targetRole === 'site_manager') return 'tech_eval_manager';
+    if (targetRole === 'site_lead') return 'tech_eval_lead';
+  }
+  if (raterRole === 'site_lead') {
+    if (targetRole === 'bess_tech') return 'lead_eval_tech';
+    if (targetRole === 'site_manager') return 'tech_eval_manager';
+  }
+  if (raterRole === 'site_manager') {
+    if (targetRole === 'bess_tech') return 'manager_eval_tech';
+    if (targetRole === 'site_lead') return 'tech_eval_lead';
+  }
+  return null;
+};
+
+export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email, userRole, jobsiteGroup, weekStartDate }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
   const [eligibleTargets, setEligibleTargets] = useState<Employee[]>([]);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
 
   const handleStartSurvey = async () => {
-    // Fetch eligible targets based on user role and jobsite
-    const today = new Date();
-    const todayStr = format(today, 'yyyy-MM-dd');
-    
-    // 1. Get current user's jobsite for this week
-    const { data: userAssignments, error: assignError } = await supabase
-      .from('assignment_weeks')
-      .select('id, week_start, assignment_name')
-      .eq('email', email)
-      .lte('week_start', todayStr)
-      .order('week_start', { ascending: false })
-      .limit(1);
+    let assignmentNames: string[] = [];
+    let weekStart = weekStartDate;
+
+    if (jobsiteGroup) {
+      assignmentNames = [jobsiteGroup];
+      if (!weekStart) {
+        weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
+      }
+    } else {
+      // Fetch eligible targets based on user role and jobsite
+      const today = new Date();
+      const todayStr = format(today, 'yyyy-MM-dd');
       
-    if (!userAssignments || userAssignments.length === 0) {
-      alert('No jobsite assignment found for this week.');
-      return;
+      // 1. Get current user's jobsite for this week
+      const { data: userAssignments, error: assignError } = await supabase
+        .from('assignment_weeks')
+        .select('id, week_start, assignment_name')
+        .eq('email', email)
+        .lte('week_start', todayStr)
+        .order('week_start', { ascending: false })
+        .limit(1);
+        
+      if (!userAssignments || userAssignments.length === 0) {
+        alert('No jobsite assignment found for this week.');
+        return;
+      }
+      
+      assignmentNames = parseAssignmentNames(userAssignments[0].assignment_name);
+      weekStart = userAssignments[0].week_start;
     }
     
-    const assignmentNames = parseAssignmentNames(userAssignments[0].assignment_name);
+    // 2. Get other employees assigned to the same jobsite
+    let targets: Employee[] = [];
     
-    // Get jobsite groups for these jobsites
-    const { data: jobsites, error: sitesError } = await supabase
-      .from('jobsites')
-      .select('id, jobsite_group')
-      .in('jobsite_group', assignmentNames);
-      
-    if (sitesError || !jobsites) {
-      alert('Error fetching jobsite information.');
-      return;
-    }
-    
-    const jobsiteGroups = Array.from(new Set(jobsites?.map(j => j.jobsite_group).filter(Boolean) as string[]));
-    
-    // 2. Get other employees with the target role at the same jobsite group
-    const targetRole = userRole === 'manager' ? 'bess_tech' : 'site_manager';
-    
-    // 2. Get other employees with the target role
-    const { data: targets, error: targetsError } = await supabase
-      .from('employees')
-      .select('*')
-      .eq('role', targetRole);
-      
-    if (targetsError) {
-      console.error('Error fetching targets:', targetsError);
-      alert('Error fetching eligible employees.');
-      return;
+    if (userRole === 'employee') {
+      // Find the jobsite for the current assignment
+      const { data: jobsites } = await supabase
+        .from('jobsites')
+        .select('manager')
+        .or(assignmentNames.map(n => `jobsite_name.ilike.%${n}%,jobsite_group.ilike.%${n}%`).join(','));
+        
+      if (jobsites && jobsites.length > 0) {
+        const managerNames = jobsites.flatMap(j => j.manager?.split(',').map(m => m.trim()) || []);
+        
+        // Fetch the manager's employee record
+        const { data: managers } = await supabase
+          .from('employees')
+          .select('*')
+          .in('first_name', managerNames.map(m => m.split(' ')[0]))
+          .in('last_name', managerNames.map(m => m.split(' ')[1] || ''));
+          
+        targets = managers || [];
+      }
+    } else {
+      const { data: allTargets, error: targetsError } = await supabase
+        .from('employees')
+        .select('*')
+        .neq('id', userId); // Exclude current user
+        
+      if (targetsError) {
+        console.error('Error fetching targets:', targetsError);
+        alert(`Error fetching eligible employees (targets): ${targetsError.message}`);
+        return;
+      }
+      targets = allTargets || [];
     }
 
     // 3. Get assignment weeks for these employees for the target week
+    if (targets.length === 0) {
+      setEligibleTargets([]);
+      setIsTargetModalOpen(true);
+      return;
+    }
+
     const { data: targetAssignments, error: targetAssignError } = await supabase
       .from('assignment_weeks')
       .select('*')
-      .eq('week_start', userAssignments[0].week_start)
-      .in('employee_id', targets.map(t => t.employee_id_ref));
+      .eq('week_start', weekStart)
+      .in('employee_fk', targets.map(t => t.id));
       
     if (targetAssignError) {
       console.error('Error fetching target assignments:', targetAssignError);
-      alert('Error fetching eligible employees.');
+      alert(`Error fetching eligible employees (assignments): ${targetAssignError.message}`);
       return;
     }
 
     // 4. Filter targets in JS
+    console.log('Targets before filtering:', targets);
+    console.log('Target assignments for week:', targetAssignments);
+    console.log('User assignment names:', assignmentNames);
+
     const filteredTargets = targets.filter(emp => {
-      const empAssignments = targetAssignments.filter(ta => ta.employee_id === emp.employee_id_ref);
+      // Constraint: Cannot survey own role
+      if (userRole === emp.role) return false;
+
+      const empAssignments = targetAssignments.filter(ta => ta.employee_fk === emp.id);
       
       // Parse assignment names for this employee
-      const empAssignmentNames = empAssignments.flatMap(aw => parseAssignmentNames(aw.assignment_name || ''));
+      const empAssignmentNames = empAssignments.flatMap(aw => parseAssignmentNames(aw.assignment_type || ''));
       
       // Check if any of these assignment names match the current user's assignment names
-      return empAssignmentNames.some(name => assignmentNames.includes(name));
+      const isMatch = empAssignmentNames.some(empName => 
+        assignmentNames.some(userName => 
+          empName.includes(userName) || userName.includes(empName)
+        )
+      );
+      
+      console.log(`Filtering ${emp.first_name} ${emp.last_name}: match=${isMatch}, empAssignmentNames=${JSON.stringify(empAssignmentNames)}, empAssignments=${JSON.stringify(empAssignments)}`);
+      
+      return isMatch;
     });
+    
+    console.log('Filtered targets:', filteredTargets);
       
     if (filteredTargets) {
       setEligibleTargets(filteredTargets);
@@ -123,13 +186,13 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
           isOpen={isModalOpen} 
           onClose={() => { setIsModalOpen(false); setSelectedTargetId(null); }}
           surveyType={(() => {
-            const type = userRole === 'manager' ? 'manager_eval_tech' : 'tech_eval_manager';
-            console.log('Debug: SurveyInitiator passing surveyType:', type, 'for userRole:', userRole);
-            return type;
+            const target = eligibleTargets.find(t => t.id === selectedTargetId);
+            if (!target) return 'tech_eval_manager'; // Default
+            return getSurveyType(userRole, target.role) || 'tech_eval_manager';
           })()}
           raterId={userId} 
           targetId={selectedTargetId} 
-          weekStartDate={format(new Date(), 'yyyy-MM-dd')} 
+          weekStartDate={weekStartDate} 
         />
       )}
     </>

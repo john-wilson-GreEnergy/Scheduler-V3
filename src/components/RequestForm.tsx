@@ -67,17 +67,17 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
         // From current week forward, omit "Rotation"
         return assignments.filter(a => {
           const weekDate = new Date(a.week_start + 'T12:00:00');
-          return weekDate >= currentWeekStart && a.assignment_name !== 'Rotation';
+          return weekDate >= currentWeekStart && a.status !== 'rotation';
         });
       case 'time_off':
         // Next available work week, omit "Rotation"
         return assignments.filter(a => {
           const weekDate = new Date(a.week_start + 'T12:00:00');
-          return weekDate >= currentWeekStart && a.assignment_name !== 'Rotation';
+          return weekDate >= currentWeekStart && a.status !== 'rotation';
         });
       case 'rotation_change':
         // Next available rotation week (future weeks without rotation assigned)
-        return assignments.filter(a => new Date(a.week_start + 'T12:00:00') > now && a.assignment_name !== 'Rotation');
+        return assignments.filter(a => new Date(a.week_start + 'T12:00:00') > now && a.status !== 'rotation');
       case 'jobsite_change':
         // Next available work week (jobsite assigned that isn't Vacation, Rotation, or Personal)
         return assignments.filter(a => {
@@ -118,8 +118,8 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
               required
             >
               <option value="">Select rotation week</option>
-              {assignments.filter(a => a.assignment_name === 'Rotation' && new Date(a.week_start + 'T12:00:00') > new Date()).map(a => (
-                <option key={a.id} value={a.week_start}>{a.week_start} - {a.assignment_name}</option>
+              {assignments.filter(a => a.status === 'rotation' && new Date(a.week_start + 'T12:00:00') > new Date()).map(a => (
+                <option key={a.id} value={a.week_start}>{a.week_start} - {a.status}</option>
               ))}
             </select>
           </div>
@@ -132,8 +132,8 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
               required
             >
               <option value="">Select work week</option>
-              {assignments.filter(a => a.assignment_name !== 'Rotation' && new Date(a.week_start + 'T12:00:00') > new Date()).map(a => (
-                <option key={a.id} value={a.week_start}>{a.week_start} - {a.assignment_name}</option>
+              {assignments.filter(a => a.status !== 'rotation' && new Date(a.week_start + 'T12:00:00') > new Date()).map(a => (
+                <option key={a.id} value={a.week_start}>{a.week_start} - {a.status}</option>
               ))}
             </select>
           </div>

@@ -64,6 +64,7 @@ export function RequestDashboard() {
             last_name: emp.last_name,
             week_start: req.requested_week_start,
             assignment_name: req.requested_jobsite,
+            status: 'assigned',
             value_type: 'jobsite'
           };
 

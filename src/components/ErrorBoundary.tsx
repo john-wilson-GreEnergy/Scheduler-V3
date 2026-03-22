@@ -8,7 +8,21 @@ export const ErrorBoundary: React.FC<Props> = ({ children }) => {
   const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
-    const errorHandler = (error: ErrorEvent) => {
+    const errorHandler = (event: ErrorEvent | PromiseRejectionEvent) => {
+      let error: any;
+      if (event instanceof PromiseRejectionEvent) {
+        error = event.reason;
+      } else {
+        error = event.error || event.message;
+      }
+
+      // Ignore WebSocket closed errors
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('WebSocket closed without opened')) {
+        console.warn("ErrorBoundary ignoring expected WebSocket error:", errorMessage);
+        return;
+      }
+
       console.error("ErrorBoundary caught an error:", error);
       setHasError(true);
     };

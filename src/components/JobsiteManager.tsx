@@ -70,24 +70,25 @@ export default function JobsiteManager({ jobsites: initialJobsites, onUpdate }: 
     setLoading(true);
     try {
       const { min_staffing, ...payload } = editForm;
+      const finalPayload = { ...payload, min_staffing };
       
       // Ensure required fields have defaults if missing
-      if (!payload.full_address) {
-        payload.full_address = [payload.city, payload.state].filter(Boolean).join(', ') || 'TBD';
+      if (!finalPayload.full_address) {
+        finalPayload.full_address = [finalPayload.city, finalPayload.state].filter(Boolean).join(', ') || 'TBD';
       }
-      if (!payload.zip) payload.zip = '00000';
-      if (!payload.city) payload.city = 'TBD';
-      if (!payload.state) payload.state = 'TBD';
-      if (!payload.jobsite_name) payload.jobsite_name = 'Unnamed Jobsite';
-      if (!payload.customer) payload.customer = 'Unknown Customer';
+      if (!finalPayload.zip) finalPayload.zip = '00000';
+      if (!finalPayload.city) finalPayload.city = 'TBD';
+      if (!finalPayload.state) finalPayload.state = 'TBD';
+      if (!finalPayload.jobsite_name) finalPayload.jobsite_name = 'Unnamed Jobsite';
+      if (!finalPayload.customer) finalPayload.customer = 'Unknown Customer';
 
       // Remove empty strings for optional fields that might have unique constraints
-      if (payload.jobsite_id_ref === '') delete payload.jobsite_id_ref;
-      if (payload.jobsite_alias === '') delete payload.jobsite_alias;
+      if (finalPayload.jobsite_id_ref === '') delete finalPayload.jobsite_id_ref;
+      if (finalPayload.jobsite_alias === '') delete finalPayload.jobsite_alias;
 
       const { error } = await supabase
         .from('jobsites')
-        .update(payload)
+        .update(finalPayload)
         .eq('id', editingId);
 
       if (error) throw error;
@@ -112,24 +113,25 @@ export default function JobsiteManager({ jobsites: initialJobsites, onUpdate }: 
     setLoading(true);
     try {
       const { min_staffing, ...payload } = editForm;
+      const finalPayload = { ...payload, min_staffing };
       
       // Ensure required fields have defaults if missing
-      if (!payload.full_address) {
-        payload.full_address = [payload.city, payload.state].filter(Boolean).join(', ') || 'TBD';
+      if (!finalPayload.full_address) {
+        finalPayload.full_address = [finalPayload.city, finalPayload.state].filter(Boolean).join(', ') || 'TBD';
       }
-      if (!payload.zip) payload.zip = '00000';
-      if (!payload.city) payload.city = 'TBD';
-      if (!payload.state) payload.state = 'TBD';
-      if (!payload.jobsite_name) payload.jobsite_name = 'Unnamed Jobsite';
-      if (!payload.customer) payload.customer = 'Unknown Customer';
+      if (!finalPayload.zip) finalPayload.zip = '00000';
+      if (!finalPayload.city) finalPayload.city = 'TBD';
+      if (!finalPayload.state) finalPayload.state = 'TBD';
+      if (!finalPayload.jobsite_name) finalPayload.jobsite_name = 'Unnamed Jobsite';
+      if (!finalPayload.customer) finalPayload.customer = 'Unknown Customer';
 
       // Remove empty strings for optional fields that might have unique constraints
-      if (payload.jobsite_id_ref === '') delete payload.jobsite_id_ref;
-      if (payload.jobsite_alias === '') delete payload.jobsite_alias;
+      if (finalPayload.jobsite_id_ref === '') delete finalPayload.jobsite_id_ref;
+      if (finalPayload.jobsite_alias === '') delete finalPayload.jobsite_alias;
 
       const { error } = await supabase
         .from('jobsites')
-        .insert([payload]);
+        .insert([finalPayload]);
 
       if (error) throw error;
       setIsAdding(false);

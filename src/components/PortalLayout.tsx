@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Bell, LogOut, Construction, RefreshCw, Search, Command, UserCircle, ShieldCheck, ExternalLink, Menu, X as CloseIcon } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { Bell, LogOut, Construction, RefreshCw, Search, Command, UserCircle, ShieldCheck, ExternalLink, Menu, X as CloseIcon, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { format, startOfWeek } from 'date-fns';
@@ -26,14 +27,47 @@ export default function PortalLayout({
   lastUpdated,
   onRefresh
 }: PortalLayoutProps) {
-  const { user, employee, isAdmin, isSiteManager, isSiteLead, handleLogout } = useAuth();
+  const { user, employee, isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isHR, handleLogout } = useAuth();
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   const isEmployeeView = location.pathname.startsWith('/portal');
+
+  useEffect(() => {
+    if (!employee) return;
+
+    const fetchUnreadCount = async () => {
+      const { count, error } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('employee_fk', employee.id)
+        .eq('read', false);
+      
+      if (!error && count !== null) setUnreadCount(count);
+    };
+
+    fetchUnreadCount();
+
+    const subscription = supabase
+      .channel('notifications-bell')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'notifications',
+        filter: `employee_fk=eq.${employee.id}`
+      }, () => {
+        fetchUnreadCount();
+      })
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [employee]);
 
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -71,7 +105,20 @@ export default function PortalLayout({
               Switch Role
             </h3>
             <div className="flex flex-col gap-1 px-2">
-              {isAdmin && (
+              {isSuperAdmin && (
+                <button 
+                  onClick={() => navigate('/admin')}
+                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/admin') 
+                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <ShieldCheck size={18} />
+                  Super Admin
+                </button>
+              )}
+              {isAdmin && !isSuperAdmin && (
                 <button 
                   onClick={() => navigate('/admin')}
                   className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
@@ -84,7 +131,20 @@ export default function PortalLayout({
                   Admin Portal
                 </button>
               )}
-              {(isAdmin || isSiteManager || isSiteLead) && (
+              {(isAdmin || isHR) && (
+                <button 
+                  onClick={() => navigate('/hr')}
+                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/hr') 
+                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <Users size={18} />
+                  HR Portal
+                </button>
+              )}
+              {(isAdmin || isSiteManager) && (
                 <button 
                   onClick={() => navigate('/site-manager')}
                   className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
@@ -94,7 +154,20 @@ export default function PortalLayout({
                   }`}
                 >
                   <UserCircle size={18} />
-                  Manager Portal
+                  Site Manager
+                </button>
+              )}
+              {(isAdmin || isSiteLead) && (
+                <button 
+                  onClick={() => navigate('/site-lead')}
+                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/site-lead') 
+                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <UserCircle size={18} />
+                  Site Lead
                 </button>
               )}
               <button 
@@ -106,7 +179,7 @@ export default function PortalLayout({
                 }`}
               >
                 <Construction size={18} />
-                Employee Portal
+                BESS Tech
               </button>
             </div>
           </div>
@@ -147,7 +220,7 @@ export default function PortalLayout({
           <div className="flex-1 min-w-0">
             <p className="text-xs font-bold text-white truncate">{user?.email?.split('@')[0]}</p>
             <p className="text-[9px] text-gray-500 uppercase tracking-wider">
-              {isAdmin ? 'Administrator' : isSiteManager ? 'Site Manager' : 'Employee'}
+              {isAdmin ? 'Administrator' : isSuperAdmin ? 'Super Admin' : isSiteManager ? 'Site Manager' : isHR ? 'HR Visibility' : 'Employee'}
             </p>
           </div>
         </div>
@@ -231,7 +304,19 @@ export default function PortalLayout({
               </button>
 
               <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/5 ml-2">
-                {isAdmin && (
+                {isSuperAdmin && (
+                  <button 
+                    onClick={() => navigate('/admin')}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
+                      location.pathname.startsWith('/admin') 
+                        ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
+                        : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                  >
+                    Super Admin
+                  </button>
+                )}
+                {isAdmin && !isSuperAdmin && (
                   <button 
                     onClick={() => navigate('/admin')}
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
@@ -243,7 +328,19 @@ export default function PortalLayout({
                     Admin
                   </button>
                 )}
-                {(isAdmin || isSiteManager || isSiteLead) && (
+                {(isAdmin || isHR) && (
+                  <button 
+                    onClick={() => navigate('/hr')}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
+                      location.pathname.startsWith('/hr') 
+                        ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
+                        : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                  >
+                    HR
+                  </button>
+                )}
+                {(isAdmin || isSiteManager) && (
                   <button 
                     onClick={() => navigate('/site-manager')}
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
@@ -252,7 +349,19 @@ export default function PortalLayout({
                         : 'text-gray-500 hover:text-gray-300'
                     }`}
                   >
-                    Manager
+                    Site Manager
+                  </button>
+                )}
+                {(isAdmin || isSiteLead) && (
+                  <button 
+                    onClick={() => navigate('/site-lead')}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
+                      location.pathname.startsWith('/site-lead') 
+                        ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
+                        : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                  >
+                    Site Lead
                   </button>
                 )}
                 <button 
@@ -263,7 +372,7 @@ export default function PortalLayout({
                       : 'text-gray-500 hover:text-gray-300'
                   }`}
                 >
-                  Employee
+                  BESS Tech
                 </button>
               </div>
             </div>
@@ -294,6 +403,9 @@ export default function PortalLayout({
               className="p-2 lg:p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all relative group"
             >
               <Bell size={16} className="text-gray-500 group-hover:text-white transition-colors lg:w-[18px] lg:h-[18px]" />
+              {unreadCount > 0 && (
+                <span className="absolute top-2 right-2 w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+              )}
             </button>
             
             <button 

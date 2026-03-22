@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Employee, Jobsite } from '../types';
+import { Employee, Jobsite, JobsiteGroup } from '../types';
 import { format, startOfWeek, addWeeks } from 'date-fns';
 import { Users, MapPin, Calendar, CheckCircle2, AlertCircle, ChevronRight, Search, Filter, Trash2, Save, X, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -10,6 +10,7 @@ import { sendNotification } from '../utils/notifications';
 interface BulkAssignmentsProps {
   employees: Employee[];
   jobsites: Jobsite[];
+  jobsiteGroups: JobsiteGroup[];
 }
 
 interface PlannedChange {
@@ -17,45 +18,71 @@ interface PlannedChange {
   employeeName: string;
   jobsiteId: string;
   jobsiteName: string;
+  assignmentName: string;
   weekStart: string;
+  days: string[];
 }
 
-export default function BulkAssignments({ employees, jobsites }: BulkAssignmentsProps) {
+export default function BulkAssignments({ employees, jobsites, jobsiteGroups }: BulkAssignmentsProps) {
+  const fieldEmployees = useMemo(() => employees.filter(e => e.role !== 'hr'), [employees]);
   const [selectedEmployees, setSelectedEmployees] = useState<string[]>([]);
-  const [selectedJobsite, setSelectedJobsite] = useState<string>('');
+  const [selectedJobsites, setSelectedJobsites] = useState<string[]>([]);
   const [selectedWeeks, setSelectedWeeks] = useState<string[]>([]);
+  const [jobsiteDays, setJobsiteDays] = useState<Record<string, string[]>>({});
   const [searchQuery, setSearchQuery] = useState('');
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [showInactive, setShowInactive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'select' | 'review'>('select');
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
-  const nextFourWeeks = useMemo(() => {
+  const daysOfWeek = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  const handleToggleDay = (jobsiteId: string, day: string) => {
+    setJobsiteDays(prev => {
+      const currentDays = prev[jobsiteId] || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const newDays = currentDays.includes(day) 
+        ? currentDays.filter(d => d !== day) 
+        : [...currentDays, day];
+      return { ...prev, [jobsiteId]: newDays };
+    });
+  };
+
+  const nextSixteenWeeks = useMemo(() => {
     const weeks = [];
     // Start of week on Monday
-    let current = startOfWeek(new Date(), { weekStartsOn: 1 });
-    for (let i = 0; i < 8; i++) {
+    let current = addWeeks(startOfWeek(new Date(), { weekStartsOn: 1 }), weekOffset * 16);
+    for (let i = 0; i < 16; i++) {
       weeks.push(format(current, 'yyyy-MM-dd'));
       current = addWeeks(current, 1);
     }
     return weeks;
-  }, []);
+  }, [weekOffset]);
 
   const groupedJobsites = useMemo(() => {
     const groups: Record<string, Jobsite[]> = {};
     const individualJobsites: Jobsite[] = [];
     
-    jobsites.filter(j => j.is_active).forEach(site => {
-      if (site.jobsite_group) {
-        if (!groups[site.jobsite_group]) groups[site.jobsite_group] = [];
-        groups[site.jobsite_group].push(site);
+    // Add permanent tiles
+    const permanentTiles = [
+      { id: 'rotation', jobsite_name: 'Rotation', customer: 'System' },
+      { id: 'vacation', jobsite_name: 'Vacation', customer: 'System' }
+    ];
+    
+    jobsites.filter(j => showInactive || j.is_active).forEach(site => {
+      if (site.group_id) {
+        const group = jobsiteGroups.find(g => g.id === site.group_id);
+        const groupName = group ? group.name : 'Unknown';
+        if (!groups[groupName]) groups[groupName] = [];
+        groups[groupName].push(site);
       } else {
         individualJobsites.push(site);
       }
     });
-    return { groups, individualJobsites };
-  }, [jobsites]);
+    return { groups, individualJobsites, permanentTiles };
+  }, [jobsites, jobsiteGroups, showInactive]);
 
-  const filteredEmployees = employees.filter(e => 
+  const filteredEmployees = fieldEmployees.filter(e => 
     e.is_active && (
       `${e.first_name} ${e.last_name}`.toLowerCase().includes(searchQuery.toLowerCase()) ||
       e.job_title?.toLowerCase().includes(searchQuery.toLowerCase())
@@ -64,42 +91,53 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
 
   const plannedChanges = useMemo(() => {
     const changes: PlannedChange[] = [];
+    console.log('Calculating plannedChanges:', { selectedEmployees, selectedJobsites, selectedWeeks });
     
-    let targetJobsites: Jobsite[] = [];
-    let jobsiteName = '';
+    selectedJobsites.forEach(selectedJobsite => {
+        let targetJobsites: Jobsite[] = [];
+        let assignmentName = '';
 
-    if (selectedJobsite.startsWith('group:')) {
-        const groupName = selectedJobsite.split(':')[1];
-        targetJobsites = groupedJobsites.groups[groupName] || [];
-        jobsiteName = groupName;
-    } else {
-        const jobsite = jobsites.find(j => j.id === selectedJobsite);
-        if (jobsite) {
-            targetJobsites = [jobsite];
-            jobsiteName = jobsite.jobsite_name;
+        if (selectedJobsite.startsWith('group:')) {
+            const groupName = selectedJobsite.split(':')[1];
+            targetJobsites = groupedJobsites.groups[groupName] || [];
+            assignmentName = groupName;
+        } else {
+            const jobsite = jobsites.find(j => j.id === selectedJobsite) || 
+                            jobsites.find(j => j.jobsite_name.toLowerCase() === selectedJobsite.toLowerCase());
+            if (jobsite) {
+                targetJobsites = [jobsite];
+                assignmentName = jobsite.jobsite_name;
+            }
         }
-    }
 
-    if (targetJobsites.length === 0) return [];
+        if (targetJobsites.length === 0) return;
 
-    selectedEmployees.forEach(empId => {
-      const emp = employees.find(e => e.id === empId);
-      if (!emp) return;
+        selectedEmployees.forEach(empId => {
+          const emp = fieldEmployees.find(e => e.id === empId);
+          if (!emp) return;
 
-      selectedWeeks.forEach(week => {
-        changes.push({
-          employeeId: empId,
-          employeeName: `${emp.first_name} ${emp.last_name}`,
-          jobsiteId: selectedJobsite,
-          jobsiteName: jobsiteName,
-          weekStart: week
+          selectedWeeks.forEach(week => {
+            targetJobsites.forEach(site => {
+              const days = jobsiteDays[selectedJobsite] || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+              changes.push({
+                employeeId: emp.id,
+                employeeName: `${emp.first_name} ${emp.last_name}`,
+                jobsiteId: site.id,
+                jobsiteName: site.jobsite_name,
+                assignmentName: assignmentName,
+                weekStart: week,
+                days: days
+              });
+            });
+          });
         });
-      });
     });
+
     return changes;
-  }, [selectedEmployees, selectedJobsite, selectedWeeks, employees, groupedJobsites, jobsites]);
+  }, [selectedEmployees, selectedJobsites, selectedWeeks, jobsiteDays, fieldEmployees, jobsites, groupedJobsites]);
 
   const handleToggleEmployee = (id: string) => {
+    console.log('Toggling employee:', id);
     setSelectedEmployees(prev => 
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
@@ -113,6 +151,15 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
     }
   };
 
+  const handleToggleJobsite = (id: string) => {
+    console.log('Toggling jobsite:', id);
+    setSelectedJobsites(prev => {
+      const next = prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id];
+      console.log('New selectedJobsites:', next);
+      return next;
+    });
+  };
+
   const handleToggleWeek = (week: string) => {
     setSelectedWeeks(prev => 
       prev.includes(week) ? prev.filter(w => w !== week) : [...prev, week]
@@ -121,58 +168,77 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
 
   const handleApply = async () => {
     setLoading(true);
+    console.log('Applying assignments:', { plannedChanges, selectedEmployees, selectedJobsites, selectedWeeks });
     try {
       // 1. Prepare updates for assignment_weeks
-      const updates = plannedChanges.map(change => {
-        const emp = employees.find(e => e.id === change.employeeId)!;
-        return {
-          employee_id: emp.employee_id_ref,
-          email: emp.email,
-          first_name: emp.first_name,
-          last_name: emp.last_name,
+      const map = new Map<string, { employee_fk: string, week_start: string, assignment_type: string }>(plannedChanges.map(change => {
+        const emp = fieldEmployees.find(e => e.id === change.employeeId)!;
+        return [`${emp.id}-${change.weekStart}`, {
+          employee_fk: emp.id,
           week_start: change.weekStart,
-          assignment_name: change.jobsiteName,
-          value_type: 'jobsite'
-        };
-      });
+          assignment_type: change.jobsiteId === 'rotation' || change.jobsiteId === 'vacation' ? change.jobsiteId : 'jobsite'
+        }];
+      }));
+      const uniqueUpdates = Array.from(map.values());
 
       // 2. Upsert assignment weeks
       const { error: upsertError } = await supabase
         .from('assignment_weeks')
-        .upsert(updates, { onConflict: 'email,week_start' });
+        .upsert(uniqueUpdates, { onConflict: 'employee_fk,week_start' });
       
-      if (upsertError) throw upsertError;
+      if (upsertError) {
+        console.error('Upsert error:', upsertError);
+        throw upsertError;
+      }
 
       // 3. Get the IDs of the created/updated weeks to link items
+      const uniqueEmployeeFks = Array.from(new Set(uniqueUpdates.map(u => u.employee_fk)));
+      const uniqueWeeks = Array.from(new Set(uniqueUpdates.map(u => u.week_start)));
+
       const { data: weeks, error: weeksError } = await supabase
         .from('assignment_weeks')
-        .select('id, email, week_start')
-        .in('email', updates.map(u => u.email))
-        .in('week_start', updates.map(u => u.week_start));
+        .select('id, employee_fk, week_start, items:assignment_items(jobsite_fk, assignment_type)')
+        .in('employee_fk', uniqueEmployeeFks)
+        .in('week_start', uniqueWeeks);
       
       if (weeksError) throw weeksError;
+
+      // Store previous assignments for notification
+      const previousAssignmentsMap = new Map<string, string>();
+      weeks?.forEach(w => {
+        const item = w.items?.[0]; // Assuming one assignment per week per employee
+        if (item) {
+          const jobsite = jobsites.find(j => j.id === item.jobsite_fk);
+          previousAssignmentsMap.set(`${w.employee_fk}-${w.week_start}`, jobsite?.jobsite_name || item.assignment_type);
+        }
+      });
 
       // 4. Prepare assignment_items
       const itemsToInsert: any[] = [];
       
       plannedChanges.forEach(change => {
-        const emp = employees.find(e => e.id === change.employeeId);
-        const week = weeks?.find(w => w.email === emp?.email && w.week_start === change.weekStart);
-        if (!week) return;
+        const emp = fieldEmployees.find(e => e.id === change.employeeId);
+        const week = weeks?.find(w => w.employee_fk === emp?.id && w.week_start === change.weekStart);
+        if (!week || !emp) return;
 
         let targetJobsites: Jobsite[] = [];
         if (change.jobsiteId.startsWith('group:')) {
             const groupName = change.jobsiteId.split(':')[1];
             targetJobsites = groupedJobsites.groups[groupName] || [];
         } else {
-            const jobsite = jobsites.find(j => j.id === change.jobsiteId);
+            const jobsite = jobsites.find(j => j.id === change.jobsiteId) || 
+                            jobsites.find(j => j.jobsite_name.toLowerCase() === change.jobsiteId.toLowerCase());
             if (jobsite) targetJobsites = [jobsite];
         }
 
         targetJobsites.forEach(site => {
             itemsToInsert.push({
                 assignment_week_fk: week.id,
-                jobsite_fk: site.id
+                jobsite_fk: site.id,
+                days: change.days,
+                week_start: week.week_start,
+                item_order: 0,
+                assignment_type: change.jobsiteId === 'rotation' || change.jobsiteId === 'vacation' ? change.jobsiteId : 'jobsite'
             });
         });
       });
@@ -189,36 +255,61 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
       const { error: itemError } = await supabase
         .from('assignment_items')
         .insert(itemsToInsert);
+// ...
 
       if (itemError) throw itemError;
 
       // 6. Send notifications to all affected employees
       const uniqueEmployeeIds = Array.from(new Set(plannedChanges.map(c => c.employeeId))) as string[];
+      const today = new Date().toLocaleDateString();
       
       for (const empId of uniqueEmployeeIds) {
+        const empChanges = plannedChanges.filter(c => c.employeeId === empId);
+        const emp = fieldEmployees.find(e => e.id === empId);
+        
+        const messageLines = empChanges.map(change => {
+            const prev = previousAssignmentsMap.get(`${empId}-${change.weekStart}`) || 'None';
+            const weeksUntil = Math.max(0, Math.round((new Date(change.weekStart).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
+            const daysStr = change.days ? ` (${change.days.join(', ')})` : '';
+            return `• Week Of: ${change.weekStart}${daysStr} | ${prev} ➔ ${change.jobsiteName} (In ${weeksUntil} weeks)`;
+        });
+
+        const portalMessage = empChanges.map(change => {
+            const prev = previousAssignmentsMap.get(`${empId}-${change.weekStart}`) || 'None';
+            const weeksUntil = Math.max(0, Math.round((new Date(change.weekStart).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
+            return `Update Type: Assignment Change\r\nEmployee: ${emp?.first_name} ${emp?.last_name}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: ${change.weekStart}\r\nPrevious Assignment: ${prev}\r\nNew Assignment: ${change.assignmentName}\r\nDays: ${change.days?.join(', ') || 'N/A'}\r\nWeeks Until New Assignment: ${weeksUntil}`;
+        }).join('\r\n\r\n');
+        
+        const emailMessage = portalMessage;
+
         await sendNotification({
           employeeId: empId,
-          title: 'Schedule Update',
-          message: `You have been assigned to "${plannedChanges.find(c => c.employeeId === empId)?.jobsiteName}" for ${selectedWeeks.length} upcoming week(s).`,
+          title: 'Assignment Change',
+          message: portalMessage,
           type: 'info',
           sendEmail: true,
-          updateType: 'Bulk Assignment',
-          jobsiteName: plannedChanges.find(c => c.employeeId === empId)?.jobsiteName || 'N/A',
-          weekStartDate: selectedWeeks[0] || 'N/A'
+          emailData: {
+            updateType: 'Assignment Change',
+            jobsiteName: empChanges.map(c => c.jobsiteName).join(', '),
+            weekStartDate: selectedWeeks[0] || 'N/A',
+            customEmailBody: emailMessage
+          }
         });
+        // Add a small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       logActivity('bulk_assignment', {
         employee_count: selectedEmployees.length,
         week_count: selectedWeeks.length,
-        jobsite_id: selectedJobsite
+        jobsite_ids: selectedJobsites
       });
 
       setMessage({ type: 'success', text: `Successfully applied ${plannedChanges.length} assignments.` });
       setStep('select');
       setSelectedEmployees([]);
       setSelectedWeeks([]);
-      setSelectedJobsite('');
+      setSelectedJobsites([]);
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     } finally {
@@ -316,15 +407,36 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
               <h3 className="text-xs font-bold text-emerald-500 uppercase tracking-widest flex items-center gap-2 mb-6">
                 <MapPin size={14} />
                 Target Jobsite
+                <button 
+                  onClick={() => setShowInactive(!showInactive)}
+                  className={`ml-auto text-[10px] font-bold uppercase ${showInactive ? 'text-emerald-400' : 'text-gray-500'}`}
+                >
+                  {showInactive ? 'Hide Inactive' : 'Show Inactive'}
+                </button>
               </h3>
               <div className="grid sm:grid-cols-2 gap-4">
+                {/* Permanent Tiles */}
+                {groupedJobsites.permanentTiles.map(site => (
+                  <button
+                    key={site.id}
+                    onClick={() => handleToggleJobsite(site.id)}
+                    className={`p-4 rounded-2xl border text-left transition-all ${
+                      selectedJobsites.includes(site.id) 
+                        ? 'bg-emerald-500/10 border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.1)]' 
+                        : 'bg-black/20 border-emerald-900/30 hover:border-emerald-500/30'
+                    }`}
+                  >
+                    <p className="text-sm font-bold text-white">{site.jobsite_name}</p>
+                    <p className="text-[10px] text-gray-500">{site.customer}</p>
+                  </button>
+                ))}
                 {/* Groups */}
                 {Object.entries(groupedJobsites.groups).map(([groupName, sites]: [string, Jobsite[]]) => (
                   <button
                     key={`group-${groupName}`}
-                    onClick={() => setSelectedJobsite(`group:${groupName}`)}
+                    onClick={() => handleToggleJobsite(`group:${groupName}`)}
                     className={`p-4 rounded-2xl border text-left transition-all ${
-                      selectedJobsite === `group:${groupName}` 
+                      selectedJobsites.includes(`group:${groupName}`) 
                         ? 'bg-emerald-500/10 border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.1)]' 
                         : 'bg-black/20 border-emerald-900/30 hover:border-emerald-500/30'
                     }`}
@@ -337,9 +449,9 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
                 {groupedJobsites.individualJobsites.map(site => (
                   <button
                     key={site.id}
-                    onClick={() => setSelectedJobsite(site.id)}
+                    onClick={() => handleToggleJobsite(site.id)}
                     className={`p-4 rounded-2xl border text-left transition-all ${
-                      selectedJobsite === site.id 
+                      selectedJobsites.includes(site.id) 
                         ? 'bg-emerald-500/10 border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.1)]' 
                         : 'bg-black/20 border-emerald-900/30 hover:border-emerald-500/30'
                     }`}
@@ -355,9 +467,17 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
               <h3 className="text-xs font-bold text-emerald-500 uppercase tracking-widest flex items-center gap-2 mb-6">
                 <Calendar size={14} />
                 Select Weeks
+                <div className="flex gap-2 ml-auto">
+                  <button onClick={() => setWeekOffset(prev => Math.max(0, prev - 1))} className="p-1 hover:bg-white/10 rounded">
+                    <ChevronRight size={14} className="rotate-180" />
+                  </button>
+                  <button onClick={() => setWeekOffset(prev => prev + 1)} className="p-1 hover:bg-white/10 rounded">
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
               </h3>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {nextFourWeeks.map(week => (
+                {nextSixteenWeeks.map(week => (
                   <button
                     key={week}
                     onClick={() => handleToggleWeek(week)}
@@ -374,9 +494,45 @@ export default function BulkAssignments({ employees, jobsites }: BulkAssignments
               </div>
             </div>
 
+            <div className="bg-[#0A120F] border border-emerald-900/30 rounded-3xl p-6">
+              <h3 className="text-xs font-bold text-emerald-500 uppercase tracking-widest flex items-center gap-2 mb-6">
+                <Calendar size={14} />
+                Select Days per Jobsite
+              </h3>
+              {selectedJobsites.length === 0 && <p className="text-xs text-gray-500">Please select at least one jobsite.</p>}
+              {selectedJobsites.map(jobsiteId => {
+                const jobsiteName = jobsiteId.startsWith('group:') ? jobsiteId.split(':')[1] : (jobsites.find(j => j.id === jobsiteId)?.jobsite_name || jobsiteId);
+                return (
+                  <div key={jobsiteId} className="mb-6">
+                    <p className="text-sm font-bold text-white mb-3">{jobsiteName}</p>
+                    <div className="grid grid-cols-4 sm:grid-cols-7 gap-3">
+                      {daysOfWeek.map(day => (
+                        <button
+                          key={day}
+                          onClick={() => handleToggleDay(jobsiteId, day)}
+                          className={`p-3 rounded-xl border text-center transition-all ${
+                            (jobsiteDays[jobsiteId] || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']).includes(day)
+                              ? 'bg-emerald-500/10 border-emerald-500' 
+                              : 'bg-black/20 border-emerald-900/30 hover:border-emerald-500/30'
+                          }`}
+                        >
+                          <p className="text-[10px] font-bold text-white">{day}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
             <div className="flex justify-end">
               <button
-                disabled={selectedEmployees.length === 0 || !selectedJobsite || selectedWeeks.length === 0}
+                disabled={
+                  selectedEmployees.length === 0 || 
+                  selectedJobsites.length === 0 || 
+                  selectedWeeks.length === 0 ||
+                  selectedJobsites.some(id => (jobsiteDays[id] || []).length === 0)
+                }
                 onClick={() => setStep('review')}
                 className="flex items-center gap-2 px-8 py-4 bg-emerald-500 text-black font-bold rounded-2xl hover:bg-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-500/20"
               >

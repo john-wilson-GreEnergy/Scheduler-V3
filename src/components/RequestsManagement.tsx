@@ -18,7 +18,7 @@ import { logActivity } from '../lib/logger';
 import { format } from 'date-fns';
 import { sendNotification } from '../utils/notifications';
 
-export default function RequestsManagement() {
+export default function RequestsManagement({ canApprove = true }: { canApprove?: boolean }) {
   const [requests, setRequests] = useState<PortalRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'denied'>('pending');
@@ -116,14 +116,16 @@ export default function RequestsManagement() {
           message: `Your ${request.request_type.replace('_', ' ')} request for ${request.start_date ? format(new Date(request.start_date), 'MMM dd') : 'N/A'} - ${request.end_date ? format(new Date(request.end_date), 'MMM dd') : 'N/A'} has been ${action}.`,
           type: action === 'approved' ? 'info' : 'warning',
           sendEmail: true,
-          updateType: 'Request Update',
-          jobsiteName: 'N/A',
-          weekStartDate: request.start_date ? format(new Date(request.start_date), 'MMM dd, yyyy') : 'N/A'
+          emailData: {
+            updateType: 'Request Update',
+            jobsiteName: 'N/A',
+            weekStartDate: request.start_date ? format(new Date(request.start_date), 'MMM dd, yyyy') : 'N/A'
+          }
         });
       }
 
-      // If approved and it's a time off request, update assignments
-      if (action === 'approved' && request.request_type === 'time_off') {
+      // If approved and it's a time off or vacation request, update assignments
+      if (action === 'approved' && (request.request_type === 'time_off' || request.request_type === 'vacation')) {
         const start = new Date(request.start_date);
         const end = new Date(request.end_date);
         
@@ -143,22 +145,38 @@ export default function RequestsManagement() {
         }
 
         if (weekStarts.length > 0 && request.employee) {
-          // For each week, update or insert an assignment as "Time Off"
+          // For each week, update or insert an assignment as "working" and add "Vacation" or "Time Off" to assignment_items
+          await supabase.rpc('set_audit_reason', { reason: 'request_approval_time_off_vacation' });
           for (const weekStart of weekStarts) {
-            const { error: assignError } = await supabase
-              .from('assignments')
+            // Upsert assignment_weeks
+            const { data: week, error: upsertError } = await supabase
+              .from('assignment_weeks')
               .upsert({
                 employee_id: request.employee.employee_id_ref,
                 email: request.employee.email,
                 first_name: request.employee.first_name,
                 last_name: request.employee.last_name,
                 week_start: weekStart,
-                assignment_name: 'Time Off'
+                assignment_name: request.request_type === 'vacation' ? 'Vacation' : 'Time Off',
+                status: 'assigned'
               }, {
                 onConflict: 'employee_id,week_start'
-              });
+              })
+              .select('id')
+              .single();
             
-            if (assignError) console.error('Error updating assignment:', assignError);
+            if (upsertError) {
+              console.error('Error upserting assignment_week:', upsertError);
+              continue;
+            }
+
+            // Delete existing items and insert new one
+            await supabase.from('assignment_items').delete().eq('assignment_week_id', week.id);
+            await supabase.from('assignment_items').insert({
+              assignment_week_id: week.id,
+              jobsite_name: request.request_type === 'vacation' ? 'Vacation' : 'Time Off',
+              days: 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'
+            });
           }
         }
 
@@ -192,14 +210,16 @@ export default function RequestsManagement() {
         const targetWeek = assignments?.find(a => a.week_start === request.target_week_start);
 
         if (requestedWeek && targetWeek) {
-          // Swap assignment_name
+          // Swap assignment_name and status
           const tempName = requestedWeek.assignment_name;
-          await supabase.from('assignment_weeks').update({ assignment_name: targetWeek.assignment_name }).eq('id', requestedWeek.id);
-          await supabase.from('assignment_weeks').update({ assignment_name: tempName }).eq('id', targetWeek.id);
+          const tempStatus = requestedWeek.status;
+          await supabase.from('assignment_weeks').update({ assignment_name: targetWeek.assignment_name, status: targetWeek.status }).eq('id', requestedWeek.id);
+          await supabase.from('assignment_weeks').update({ assignment_name: tempName, status: tempStatus }).eq('id', targetWeek.id);
           
           // If admin provided a jobsite, update the requested week (which was rotation)
+          let finalJobsite = targetWeek.assignment_name;
           if (jobsite) {
-             let finalJobsite = jobsite;
+             finalJobsite = jobsite;
              if (jobsite.startsWith('group:')) {
                const groupName = jobsite.split(':')[1];
                const { data: groupJobsites } = await supabase.from('jobsites').select('jobsite_name').eq('jobsite_group', groupName).eq('is_active', true);
@@ -207,8 +227,26 @@ export default function RequestsManagement() {
                  finalJobsite = groupJobsites[0].jobsite_name;
                }
              }
-             await supabase.from('assignment_weeks').update({ assignment_name: finalJobsite }).eq('id', requestedWeek.id);
+             await supabase.from('assignment_weeks').update({ assignment_name: finalJobsite, status: 'assigned' }).eq('id', requestedWeek.id);
           }
+
+          // Send standard assignment change notification
+          const weeksUntil = Math.max(0, Math.round((new Date(request.requested_week_start).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
+          const portalMessage = `Update Type: Assignment Change\r\nEmployee: ${request.employee?.first_name} ${request.employee?.last_name}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: ${request.requested_week_start}\r\nPrevious Assignment: ${tempName}\r\nNew Assignment: ${finalJobsite}\r\nDays: Mon, Tue, Wed, Thu, Fri, Sat, Sun\r\nWeeks Until New Assignment: ${weeksUntil}`;
+
+          await sendNotification({
+            employeeId: request.employee.id,
+            title: 'Assignment Change',
+            message: portalMessage,
+            type: 'info',
+            sendEmail: true,
+            emailData: {
+              updateType: 'Assignment Change',
+              jobsiteName: finalJobsite,
+              weekStartDate: request.requested_week_start,
+              customEmailBody: portalMessage
+            }
+          });
         }
       }
 
@@ -309,7 +347,7 @@ export default function RequestsManagement() {
                   </div>
                 </div>
 
-                {req.status === 'pending' && (
+                {req.status === 'pending' && canApprove && (
                   <div className="flex md:flex-col gap-2 justify-end">
                     <button
                       disabled={processingId === req.id}

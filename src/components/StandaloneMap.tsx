@@ -1,22 +1,26 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import MapPortal from './MapPortal';
-import { Jobsite } from '../types';
+import { Jobsite, JobsiteGroup } from '../types';
 import { RefreshCw } from 'lucide-react';
 
 export default function StandaloneMap() {
   const [jobsites, setJobsites] = useState<Jobsite[]>([]);
+  const [jobsiteGroups, setJobsiteGroups] = useState<JobsiteGroup[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchJobsites = async () => {
-      const { data } = await supabase
-        .from('jobsites')
-        .select('*')
-        .eq('is_active', true);
+      const [siteRes, groupRes] = await Promise.all([
+        supabase.from('jobsites').select('*').eq('is_active', true),
+        supabase.from('jobsite_groups').select('*')
+      ]);
       
-      if (data) {
-        setJobsites(data);
+      if (siteRes.data) {
+        setJobsites(siteRes.data);
+      }
+      if (groupRes.data) {
+        setJobsiteGroups(groupRes.data);
       }
       setLoading(false);
     };
@@ -48,7 +52,7 @@ export default function StandaloneMap() {
         </div>
         
         <div className="h-[calc(100vh-140px)]">
-          <MapPortal jobsites={jobsites} />
+          <MapPortal jobsites={jobsites} jobsiteGroups={jobsiteGroups} />
         </div>
       </div>
     </div>

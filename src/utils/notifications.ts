@@ -5,33 +5,28 @@ export interface SendNotificationParams {
   title: string;
   message: string;
   type?: 'info' | 'warning' | 'alert';
-  sendSms?: boolean;
   sendEmail?: boolean;
-  // New fields for email template
-  updateType?: string;
-  jobsiteName?: string;
-  weekStartDate?: string;
-  previousAssignment?: string;
-  newAssignment?: string;
-  travelDate?: string;
+  emailData?: {
+    updateType?: string;
+    jobsiteName?: string;
+    weekStartDate?: string;
+    previousAssignment?: string;
+    newAssignment?: string;
+    travelDate?: string;
+    customEmailBody?: string;
+  };
 }
 
 /**
- * Utility to send notifications to employees via the portal and optionally SMS/Email.
+ * Utility to send notifications to employees via the portal and optionally Email.
  */
 export async function sendNotification({ 
   employeeId, 
   title, 
   message, 
   type = 'info',
-  sendSms = false,
   sendEmail = false,
-  updateType = 'General Update',
-  jobsiteName = 'N/A',
-  weekStartDate = 'N/A',
-  previousAssignment,
-  newAssignment,
-  travelDate
+  emailData
 }: SendNotificationParams) {
   try {
     // 1. Save to database for the portal UI
@@ -47,14 +42,9 @@ export async function sendNotification({
 
     if (dbError) throw dbError;
 
-    // 2. If SMS requested, trigger SMS service
-    // if (sendSms) {
-    //   await triggerSmsAlert(employeeId, `${title}: ${message}`);
-    // }
-
-    // 3. If Email requested, trigger Email service
+    // 2. If Email requested, trigger Email service
     if (sendEmail) {
-      await triggerEmailAlert(employeeId, title, message, updateType, jobsiteName, weekStartDate, previousAssignment, newAssignment, travelDate);
+      await triggerEmailAlert(employeeId, title, message, emailData);
     }
 
     return { success: true };
@@ -71,12 +61,7 @@ async function triggerEmailAlert(
   employeeId: string, 
   title: string, 
   message: string,
-  updateType: string,
-  jobsiteName: string,
-  weekStartDate: string,
-  previousAssignment?: string,
-  newAssignment?: string,
-  travelDate?: string
+  emailData?: SendNotificationParams['emailData']
 ) {
   const { data: employee } = await supabase
     .from('employees')
@@ -84,35 +69,29 @@ async function triggerEmailAlert(
     .eq('id', employeeId)
     .single();
 
-  if (employee && employee.email) {
-    try {
-      const response = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          to: employee.email,
-          subject: `[GreEnergy Scheduler] ${title}`,
-          employeeName: `${employee.first_name} ${employee.last_name}`,
-          updateType,
-          jobsiteName,
-          weekStartDate,
-          updateDetails: message,
-          previousAssignment,
-          newAssignment,
-          travelDate
-        }),
-      });
-      const result = await response.json();
-      if (!result.success) {
-        console.error('Failed to send email:', result.error);
-      } else {
-        console.log(`[EMAIL SENT] To: ${employee.email} | Subject: ${title}`);
-      }
-    } catch (err) {
-      console.error('Error calling email API:', err);
+  if (!employee?.email) return;
+
+  try {
+    const response = await fetch('/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: employee.email,
+        subject: `[GreEnergy Scheduler] ${title}`,
+        employeeName: `${employee.first_name} ${employee.last_name}`,
+        updateDetails: emailData?.customEmailBody || message,
+        ...emailData
+      }),
+    });
+    
+    const result = await response.json();
+    if (!result.success) {
+      console.error('Failed to send email:', result.error);
+    } else {
+      console.log(`[EMAIL SENT] To: ${employee.email} | Subject: ${title}`);
     }
+  } catch (err) {
+    console.error('Error calling email API:', err);
   }
 }
 

@@ -1,5 +1,7 @@
+
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { assignmentService } from '../services/assignmentService';
 import { useAuth } from '../contexts/AuthContext';
 import {
   RefreshCw, MapPin, Users, Calendar, ClipboardList,
@@ -9,7 +11,7 @@ import {
   MessageSquare, X, ExternalLink, Plus, ChevronLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Employee, Jobsite, PortalRequest, PortalAction, Announcement, AssignmentWeek, RotationConfig } from '../types';
+import { Employee, Jobsite, PortalRequest, PortalAction, Announcement, AssignmentWeek, AssignmentItem, RotationConfig, JobsiteGroup } from '../types';
 import { logActivity } from '../lib/logger';
 import PortalLayout from './PortalLayout';
 import MapPortal from './MapPortal';
@@ -23,14 +25,17 @@ import { PerformancePulseTile } from './PerformancePulseTile';
 import { SurveyModal } from './SurveyModal';
 import { SurveyInitiator } from './SurveyInitiator';
 import { TargetSelectionModal } from './TargetSelectionModal';
+import { AssignmentImporter } from './AssignmentImporter';
 import { IconComponent } from './PortalComponents';
 import { format, startOfWeek, addWeeks, parseISO } from 'date-fns';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { isRotationWeek } from '../utils/rotation';
+import { submitSurvey, getSurveyQuestions } from '../services/surveyService';
+import { SurveyType } from '../types/surveys';
 
 interface SiteEmployee extends Employee {
   rotation_config?: RotationConfig;
-  current_assignment?: string;
+  current_assignments?: AssignmentItem[];
   is_on_rotation?: boolean;
 }
 
@@ -43,6 +48,7 @@ export default function SiteManagerPortal() {
   const [siteGroupName, setSiteGroupName] = useState<string>('');
   const [groupJobsites, setGroupJobsites] = useState<Jobsite[]>([]);
   const [allJobsites, setAllJobsites] = useState<Jobsite[]>([]);
+  const [jobsiteGroups, setJobsiteGroups] = useState<JobsiteGroup[]>([]);
   const [siteEmployees, setSiteEmployees] = useState<SiteEmployee[]>([]);
   const [completions, setCompletions] = useState<any[]>([]);
   const [requests, setRequests] = useState<(PortalRequest & { employee?: Employee })[]>([]);
@@ -91,6 +97,10 @@ export default function SiteManagerPortal() {
         .eq('is_active', true)
         .order('jobsite_name');
 
+      const { data: groups } = await supabase
+        .from('jobsite_groups')
+        .select('*');
+
       const { data: portalActions } = await supabase
         .from('portal_actions')
         .select('*')
@@ -112,28 +122,30 @@ export default function SiteManagerPortal() {
         .limit(5);
 
       setAllJobsites(allSites || []);
+      setJobsiteGroups(groups || []);
       setPortalActions(portalActions || []);
       setAnnouncements(announcements || []);
       setRecentActivity(recentActivity || []);
 
       if (employee) {
         const now = new Date();
-        const { data: assignments } = await supabase
-          .from('assignment_weeks')
-          .select('*')
-          .eq('email', employee.email)
-          .order('week_start', { ascending: true });
-
+        const assignments = await assignmentService.getAssignmentsByEmployeeId(employee.id);
         const { data: rotationConfigs } = await supabase
           .from('rotation_configs')
           .select('*');
 
         if (assignments) {
-          const current = assignments.find(a => new Date(a.week_start + 'T12:00:00') <= now);
+          const current = assignments.filter(a => new Date(a.week_start + 'T12:00:00') <= now).pop();
           const upcoming = assignments.filter(a => new Date(a.week_start + 'T12:00:00') > now);
-          setCurrentAssignment(current || null);
+          
+          // Use the joined assignment_items data
+          const currentWithItems = current ? {
+            ...current,
+            assignment_items: current.assignment_items || []
+          } : null;
+
+          setCurrentAssignment(currentWithItems);
           setUpcomingAssignments(upcoming);
-        }
 
         if (rotationConfigs) {
           const configMap: Record<string, RotationConfig> = {};
@@ -143,8 +155,9 @@ export default function SiteManagerPortal() {
           setRotationConfigs(configMap);
         }
       }
+    }
 
-      // If no manager match, find site via current week assignment_weeks email
+    // If no manager match, find site via current week assignment_weeks email
       let assignmentSite: Jobsite | null = null;
       if (!managedSite && employee?.email) {
         const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
@@ -200,22 +213,31 @@ export default function SiteManagerPortal() {
         setCurrentWeekStart(weekStart);
 
         // Get current week assignments matching this site or group
+        const jobsiteIds = resolvedGroupSites.map(s => s.id);
         const { data: siteAssignments } = await supabase
           .from('assignment_weeks')
-          .select('*')
+          .select(`
+            *,
+            assignment_items!inner(*)
+          `)
           .eq('week_start', weekStart)
-          .or(matchNamesList.map(n => `assignment_name.ilike.%${n}%`).join(','));
+          .in('assignment_items.jobsite_fk', jobsiteIds);
+        
+        console.log('SiteAssignments:', siteAssignments);
 
         // Get all current week assignments for the assignment map
         const { data: allCurrentWeek } = await supabase
           .from('assignment_weeks')
           .select('*')
           .eq('week_start', weekStart);
+        
+        console.log('AllCurrentWeek:', allCurrentWeek);
 
         // Build set of employee identifiers assigned to this site/group
         const assignedRefs = new Set<string>(
           (siteAssignments || [])
-            .flatMap(aw => [aw.employee_id, aw.email].filter(Boolean))
+            .map(aw => aw.employee_fk)
+            .filter(Boolean)
         );
 
         // Get all employees + their rotation configs
@@ -232,28 +254,28 @@ export default function SiteManagerPortal() {
         const configMap: Record<string, RotationConfig> = {};
         (rotConfigs || []).forEach(c => { configMap[c.employee_fk] = c; });
 
-        // Map employee_id_ref/email -> assignment_name for this week
-        const assignmentMap: Record<string, string> = {};
+        // Map employee_id -> assignment_week for this week
+        const assignmentMap: Record<string, AssignmentWeek> = {};
         (allCurrentWeek || []).forEach(aw => {
-          if (aw.employee_id) assignmentMap[aw.employee_id] = aw.assignment_name || '';
-          if (aw.email) assignmentMap[aw.email] = aw.assignment_name || '';
+          if (aw.employee_id) assignmentMap[aw.employee_id] = aw;
         });
 
         const enriched: SiteEmployee[] = (empData || [])
           .filter(emp =>
-            assignedRefs.has(emp.employee_id_ref) ||
-            assignedRefs.has(emp.email)
+            (assignedRefs.has(emp.id) ||
+            assignedRefs.has(emp.email)) &&
+            emp.role !== 'hr'
           )
           .map(emp => {
             const config = configMap[emp.id];
-            const isOnRotation = isRotationWeek(new Date(weekStart), config, emp.rotation_group);
+            const assignmentForWeek = assignmentMap[emp.id];
+            const isOnRotation = assignmentForWeek?.status?.toLowerCase() === 'rotation';
             return {
               ...emp,
               rotation_config: config || null,
-              current_assignment:
-                assignmentMap[emp.employee_id_ref] ||
-                assignmentMap[emp.email] ||
-                siteToUse.jobsite_name,
+              current_assignments:
+                assignmentForWeek?.assignment_items ||
+                [],
               is_on_rotation: isOnRotation,
             };
           });
@@ -329,15 +351,16 @@ export default function SiteManagerPortal() {
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 size={16} />, category: 'Site' },
+    { id: 'chat', label: 'Crew Chat', icon: <MessageSquare size={16} />, category: 'Site' },
+    { id: 'jobsite-info', label: 'Jobsite', icon: <Info size={16} />, category: 'Site' },
     { id: 'roster', label: 'Roster', icon: <Users size={16} />, category: 'Site' },
     { id: 'schedule', label: 'Schedule', icon: <Calendar size={16} />, category: 'Site' },
-    { id: 'chat', label: 'Crew Chat', icon: <MessageSquare size={16} />, category: 'Site' },
-    { id: 'map', label: 'Map', icon: <MapPin size={16} />, category: 'Site' },
-    { id: 'requests', label: `Requests${pendingCount > 0 ? ` (${pendingCount})` : ''}`, icon: <ClipboardList size={16} />, category: 'Management' },
-    { id: 'completions', label: `Action Completions${pendingCompletions > 0 ? ` (${pendingCompletions})` : ''}`, icon: <CheckCircle2 size={16} />, category: 'Management' },
-    { id: 'actions', label: 'Actions', icon: <Layers size={16} />, category: 'Management' },
     { id: 'surveys', label: 'Surveys', icon: <MessageSquare size={16} />, category: 'Management' },
-    { id: 'jobsite-info', label: 'Site Info', icon: <Info size={16} />, category: 'Management' },
+    { id: 'requests', label: `Requests${pendingCount > 0 ? ` (${pendingCount})` : ''}`, icon: <ClipboardList size={16} />, category: 'Management' },
+    { id: 'actions', label: 'GreEnergy Links', icon: <Layers size={16} />, category: 'Management' },
+    { id: 'completions', label: `Action Completions${pendingCompletions > 0 ? ` (${pendingCompletions})` : ''}`, icon: <CheckCircle2 size={16} />, category: 'Management' },
+    { id: 'importer', label: 'Assignment Importer', icon: <ClipboardList size={16} />, category: 'Management' },
+    { id: 'map', label: 'Map', icon: <MapPin size={16} />, category: 'Management' },
   ];
 
   const handleMarkComplete = async (action: PortalAction) => {
@@ -369,6 +392,30 @@ export default function SiteManagerPortal() {
       .replace(/{{id}}/g, encodeURIComponent(employee.id));
   };
 
+  const seedTestData = async () => {
+    if (!employee) return;
+    try {
+      const surveyType: SurveyType = 'tech_eval_manager';
+      const questions = await getSurveyQuestions(surveyType);
+      const scores: Record<string, number> = {};
+      questions.forEach(q => scores[q.id] = Math.floor(Math.random() * 5) + 1);
+      
+      await submitSurvey(
+        employee.id,
+        employee.id,
+        surveyType,
+        currentWeekStart,
+        JSON.stringify(scores), // Pass as string if backend expects JSON string
+        { well: 'Test', improve: 'Test', notes: 'Test' }
+      );
+      alert('Test survey submitted!');
+      fetchData();
+    } catch (err: any) {
+      console.error('Error seeding test data:', err);
+      alert(`Error seeding test data: ${err.message || 'Unknown error'}`);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#050A08] flex items-center justify-center">
@@ -379,7 +426,7 @@ export default function SiteManagerPortal() {
 
   return (
     <PortalLayout
-      title={siteGroupName ? `Site Manager — ${siteGroupName}` : 'Site Manager Portal'}
+      title={siteGroupName ? `Site Manager — ${siteGroupName}` : 'Site Manager'}
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={setActiveTab}
@@ -522,11 +569,14 @@ export default function SiteManagerPortal() {
                     <div className="grid grid-cols-1 gap-4 mb-8">
                       <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
                         <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Assignment</span>
-                        <p className="text-sm font-bold text-white truncate">{currentAssignment.assignment_name || 'N/A'}</p>
+                        {[...new Set(currentAssignment?.assignment_items?.map(item => {
+                          const group = jobsiteGroups.find(g => g.id === item.jobsites?.group_id);
+                          return group ? group.name : item.jobsites?.jobsite_name;
+                        }) || [])].join(', ') || 'N/A'}
                       </div>
                       <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
                         <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Customer</span>
-                        <p className="text-sm font-bold text-white truncate">{currentAssignment.customer || 'N/A'}</p>
+                        {[...new Set(currentAssignment?.assignment_items?.map(item => item.jobsites?.customer || 'N/A') || [])].join(', ') || 'N/A'}
                       </div>
                     </div>
                   </>
@@ -546,11 +596,23 @@ export default function SiteManagerPortal() {
                     </div>
                     <Plus size={16} className="opacity-50" />
                   </button>
-                  <SurveyInitiator userId={employee?.id || ''} email={employee?.email || ''} userRole={employee?.role || 'employee'} />
+                  <SurveyInitiator 
+                    userId={employee?.id || ''} 
+                    email={employee?.email || ''} 
+                    userRole={employee?.role || 'site_manager'} 
+                    jobsiteGroup={jobsite?.jobsite_group || undefined}
+                    weekStartDate={currentWeekStart}
+                  />
+                  <button onClick={seedTestData} className="w-full p-4 bg-white/5 hover:bg-emerald-500 hover:text-black rounded-2xl border border-white/5 flex items-center justify-between transition-all group">
+                    <div className="flex items-center gap-3">
+                      <span className="text-emerald-500 group-hover:text-black"><ClipboardList size={16} /></span>
+                      <span className="text-xs font-bold">Seed Test Data</span>
+                    </div>
+                    <Plus size={16} className="opacity-50" />
+                  </button>
                 </div>
               </div>
             </div>
-
             {/* Jobsite Info Card & Assignment Timeline */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {jobsite && <JobsiteInfoCard jobsite={jobsite} />}
@@ -575,16 +637,22 @@ export default function SiteManagerPortal() {
                       {visibleWeeks.map((wk) => {
                         const isCurrent = currentAssignment && wk.id === currentAssignment.id;
                         const weekDate = new Date(wk.week_start + 'T12:00:00');
-                        const config = employee?.id ? rotationConfigs[employee.id] : undefined;
-                        const isScheduledRotation = config ? isRotationWeek(weekDate, config) : false;
-                        const isActuallyRotation = wk.assignment_name?.toLowerCase() === 'rotation';
+                        const emp = siteEmployees.find(e => e.id === wk.employee_fk);
+                        const config = emp?.rotation_config;
+                        const isScheduledRotation = config ? isRotationWeek(weekDate, config) : (emp ? isRotationWeek(weekDate, emp) : false);
+                        const isActuallyRotation = wk.status?.toLowerCase() === 'rotation';
+                        const assignmentNames = wk.assignment_items?.map(item => {
+                          const group = jobsiteGroups.find(g => g.id === item.jobsites?.group_id);
+                          return group ? group.name : item.jobsites?.jobsite_name;
+                        }) || [];
+                        const assignmentName = [...new Set(assignmentNames)].join(', ') || '—';
                         const rotationConflict = isScheduledRotation !== isActuallyRotation;
 
                         return (
                           <div key={wk.id} className={`p-4 rounded-2xl border transition-all relative overflow-hidden ${isCurrent ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/5'}`}>
                             {isScheduledRotation && <div className="absolute top-0 right-0 px-2 py-0.5 bg-purple-500/20 text-purple-400 text-[8px] font-bold uppercase rounded-bl-lg">Rotation</div>}
                             <p className="text-[10px] text-gray-500 font-mono mb-1">{weekDate.toLocaleDateString()}</p>
-                            <p className={`text-sm font-bold truncate ${rotationConflict ? 'text-amber-400' : 'text-white'}`}>{wk.assignment_name || '—'}</p>
+                            <p className={`text-sm font-bold truncate ${rotationConflict ? 'text-amber-400' : 'text-white'}`}>{assignmentName}</p>
                             <div className="flex items-center justify-between mt-2">
                               <p className="text-[10px] text-gray-500">{isCurrent ? 'Current' : 'Scheduled'}</p>
                               {rotationConflict && <AlertTriangle size={10} className="text-amber-400" />}
@@ -848,13 +916,19 @@ export default function SiteManagerPortal() {
 
         {activeTab === 'chat' && (
           <motion.div key="chat" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="h-[calc(100vh-12rem)]">
-            <Chat jobsiteId={jobsite?.id} jobsiteGroup={jobsite?.jobsite_group} jobsiteName={siteGroupName} />
+            <Chat jobsiteId={jobsite?.id} jobsiteGroup={jobsite?.jobsite_group} jobsiteName={siteGroupName} jobsiteGroupName={siteGroupName} />
           </motion.div>
         )}
 
+        {activeTab === 'importer' && (
+          <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-white">Assignment Importer</h2>
+            <AssignmentImporter />
+          </div>
+        )}
         {activeTab === 'map' && (
           <motion.div key="map" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
-            <MapPortal jobsites={allJobsites} employees={siteEmployees} />
+            <MapPortal jobsites={allJobsites} employees={siteEmployees} jobsiteGroups={jobsiteGroups} />
           </motion.div>
         )}
 
@@ -1088,152 +1162,5 @@ export default function SiteManagerPortal() {
     </PortalLayout>
   );
 }
-
-// ── Schedule Tab Component ───────────────────────────────────────────────────
-function ScheduleTab({ jobsite, allJobsites, siteEmployees }: {
-  jobsite: Jobsite | null;
-  allJobsites: Jobsite[];
-  siteEmployees: SiteEmployee[];
-}) {
-  const [scheduleData, setScheduleData] = useState<Record<string, Record<string, string>>>({});
-  const [weeks, setWeeks] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!jobsite) return;
-    const fetchSchedule = async () => {
-      setLoading(true);
-      const todayStr = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
-      const siteGroup = (jobsite as any).jobsite_group;
-      const groupSites = siteGroup ? allJobsites.filter((s: any) => s.jobsite_group === siteGroup) : [jobsite];
-      const matchNames = Array.from(new Set([
-        (jobsite as any).jobsite_name,
-        (jobsite as any).jobsite_alias,
-        (jobsite as any).jobsite_id_ref,
-        siteGroup,
-        ...groupSites.map((s: any) => s.jobsite_name),
-        ...groupSites.map((s: any) => s.jobsite_alias),
-      ].filter(Boolean) as string[]));
-
-      const { data: futureAssignments } = await supabase
-        .from('assignment_weeks')
-        .select('*')
-        .gte('week_start', todayStr)
-        .or(matchNames.map((n: string) => `assignment_name.ilike.%${n}%`).join(','))
-        .order('week_start');
-
-      if (!futureAssignments) { setLoading(false); return; }
-
-      const weekSet = Array.from(new Set(futureAssignments.map((a: any) => a.week_start))).sort() as string[];
-      setWeeks(weekSet);
-
-      const data: Record<string, Record<string, string>> = {};
-      futureAssignments.forEach((a: any) => {
-        const key = a.email || a.employee_id || '';
-        if (!key) return;
-        if (!data[key]) data[key] = {};
-        data[key][a.week_start] = a.assignment_name || '';
-      });
-      setScheduleData(data);
-      setLoading(false);
-    };
-    fetchSchedule();
-  }, [jobsite, allJobsites]);
-
-  const allEmps = Array.from(new Set([
-    ...siteEmployees.map((e: any) => e.email),
-    ...Object.keys(scheduleData),
-  ])).filter(Boolean) as string[];
-
-  const getEmpName = (email: string) => {
-    const emp = siteEmployees.find((e: any) => e.email === email);
-    if (emp) return { name: `${emp.first_name} ${emp.last_name}`, title: emp.job_title || '' };
-    return { name: email.split('@')[0].replace('.', ' '), title: '' };
-  };
-
-  if (loading) return (
-    <div className="py-20 text-center text-gray-600 text-sm italic">Loading schedule...</div>
-  );
-
-  const thisWeek = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
-
-  return (
-    <motion.div key="schedule" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
-      <div className="bg-[#0A120F] border border-white/5 rounded-2xl p-6">
-        <h3 className="font-bold text-white mb-6 flex items-center gap-2">
-          <Layers size={16} className="text-emerald-500" />
-          Upcoming Schedule — {(jobsite as any)?.jobsite_group || (jobsite as any)?.jobsite_name}
-          <span className="ml-2 text-[10px] text-gray-600 font-normal">{weeks.length} weeks</span>
-        </h3>
-        {weeks.length === 0 ? (
-          <div className="py-10 text-center text-gray-600 italic text-sm">No upcoming assignments found for this site.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr>
-                  <th className="text-left text-[10px] text-gray-600 uppercase tracking-widest font-bold pb-4 pr-6 min-w-[180px] sticky left-0 bg-[#0A120F]">Employee</th>
-                  {weeks.map((w: string) => {
-                    const isThis = w === thisWeek;
-                    return (
-                      <th key={w} className={`text-center text-[10px] uppercase tracking-widest font-bold pb-4 px-3 min-w-[90px] ${isThis ? 'text-emerald-500' : 'text-gray-600'}`}>
-                        {isThis ? 'This Week' : format(parseISO(w), 'MMM d')}
-                        <div className="font-mono text-[9px] mt-0.5 opacity-50">{format(parseISO(w), 'MM/dd')}</div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {allEmps.map((email: string) => {
-                  const { name, title } = getEmpName(email);
-                  const empWeeks = scheduleData[email] || {};
-                  return (
-                    <tr key={email} className="group">
-                      <td className="py-3 pr-6 sticky left-0 bg-[#0A120F]">
-                        <div className="flex items-center gap-3">
-                          <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-[10px] font-bold text-emerald-500 shrink-0">
-                            {name.split(' ').map((n: string) => n[0]).join('').slice(0,2).toUpperCase()}
-                          </div>
-                          <div>
-                            <p className="text-sm font-bold text-white capitalize">{name}</p>
-                            {title && <p className="text-[10px] text-gray-600">{title}</p>}
-                          </div>
-                        </div>
-                      </td>
-                      {weeks.map((w: string) => {
-                        const assignment = empWeeks[w];
-                        return (
-                          <td key={w} className="py-3 px-3 text-center">
-                            {assignment ? (
-                              <span className="inline-block px-2 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/10 text-emerald-500">
-                                {assignment}
-                              </span>
-                            ) : (
-                              <span className="text-gray-700 text-[10px]">—</span>
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      <div className="flex items-center gap-6 text-xs text-gray-500">
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded bg-emerald-500/20 inline-block" />
-          Assigned to site
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded bg-white/5 inline-block" />
-          Not scheduled
-        </div>
-      </div>
-    </motion.div>
-  );
-}
+import ScheduleTab from './ScheduleTab';
 

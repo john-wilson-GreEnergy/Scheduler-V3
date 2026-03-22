@@ -1,23 +1,33 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import AdminPortal from './components/AdminPortal';
 import EmployeePortal from './components/EmployeePortal';
 import SiteManagerPortal from './components/SiteManagerPortal';
+import SiteLeadPortal from './components/SiteLeadPortal';
+import HRPortal from './components/HRPortal';
 import StandaloneMap from './components/StandaloneMap';
+import MobileSplashScreen from './components/MobileSplashScreen';
 import { RefreshCw, User } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
-  const { user, isAdmin, isSiteManager, loading, handleLogin } = useAuth();
+  const { user, isAdmin, isSiteManager, isSiteLead, isHR, loading, handleLogin } = useAuth();
+  const [showSplash, setShowSplash] = useState(true);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#050A08] flex items-center justify-center">
-        <RefreshCw className="text-emerald-500 animate-spin" size={32} />
-      </div>
-    );
+  useEffect(() => {
+    if (!loading) {
+      // Keep splash for at least 2 seconds for effect
+      const timer = setTimeout(() => {
+        setShowSplash(false);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [loading]);
+
+  if (showSplash) {
+    return <MobileSplashScreen />;
   }
 
   return (
@@ -74,10 +84,32 @@ export default function App() {
         />
 
         <Route
+          path="/hr/*"
+          element={
+            user ? (
+              (isAdmin || isHR) ? <HRPortal /> : <Navigate to="/portal" replace />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        <Route
           path="/site-manager/*"
           element={
             user ? (
               (isAdmin || isSiteManager) ? <SiteManagerPortal /> : <Navigate to="/portal" replace />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/site-lead/*"
+          element={
+            user ? (
+              (isAdmin || isSiteLead) ? <SiteLeadPortal /> : <Navigate to="/portal" replace />
             ) : (
               <Navigate to="/login" replace />
             )
@@ -97,8 +129,12 @@ export default function App() {
             user ? (
               isAdmin
                 ? <Navigate to="/admin" replace />
+                : isHR
+                ? <Navigate to="/hr" replace />
                 : isSiteManager
                 ? <Navigate to="/site-manager" replace />
+                : isSiteLead
+                ? <Navigate to="/site-lead" replace />
                 : <Navigate to="/portal" replace />
             ) : (
               <Navigate to="/login" replace />

@@ -26,8 +26,9 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabase';
 import { logActivity } from '../lib/logger';
-import { format } from 'date-fns';
+import { format, parseISO, startOfWeek } from 'date-fns';
 import { sendNotification } from '../utils/notifications';
+import { generateAssignmentWeeksForEmployee } from '../utils/assignmentGenerator';
 
 interface EmployeeManagementProps {
   employees: Employee[];
@@ -40,7 +41,7 @@ type SortDirection = 'asc' | 'desc';
 export default function EmployeeManagement({ employees: initialEmployees, onUpdate }: EmployeeManagementProps) {
   const [employees, setEmployees] = useState<Employee[]>(initialEmployees);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterRole, setFilterRole] = useState<'all' | 'admin' | 'site_manager' | 'site_lead' | 'bess_tech'>('all');
+  const [filterRole, setFilterRole] = useState<'all' | 'admin' | 'site_manager' | 'site_lead' | 'bess_tech' | 'hr'>('all');
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
   const [isBatchEditModalOpen, setIsBatchEditModalOpen] = useState(false);
   const [batchRole, setBatchRole] = useState<Role>('bess_tech');
@@ -60,7 +61,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
   }, [employees, selectedEmployeeIds]);
 
   const availableRoles = useMemo(() => {
-    const roles = ['bess_tech', 'site_lead', 'site_manager', 'admin'] as Role[];
+    const roles = ['bess_tech', 'site_lead', 'site_manager', 'admin', 'hr'] as Role[];
     const uniqueSelectedRoles = new Set(selectedEmployees.map(e => e.role));
     console.log('Selected employees:', selectedEmployees);
     console.log('Unique selected roles:', uniqueSelectedRoles);
@@ -170,8 +171,16 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
 
   const handleSaveEmployee = async () => {
     try {
+      let employeeIdRef = employeeForm.employee_id_ref;
+      if (!employeeIdRef) {
+        const existingIds = employees.map(e => parseInt(e.employee_id_ref)).filter(id => !isNaN(id));
+        const maxId = existingIds.length > 0 ? Math.max(...existingIds) : 0;
+        employeeIdRef = (maxId + 1).toString();
+      }
+
       const payload = {
         ...employeeForm,
+        employee_id_ref: employeeIdRef,
         rotation_group: employeeForm.rotation_group || null
       };
       console.log('Saving employee payload:', payload);
@@ -179,16 +188,25 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       if (editingEmployee) {
         const { error } = await supabase
           .from('employees')
-          .update(payload)
+          .update({ ...payload, is_active: true })
           .eq('id', editingEmployee.id);
         console.log('Update error:', error);
         if (error) throw error;
+        
+        // Reactivate: generate weeks from reactivation date if employee was inactive
+        if (!editingEmployee.is_active) {
+            await generateAssignmentWeeksForEmployee(editingEmployee, 104, parseISO(rotationForm.anchor_date));
+        }
+        
         logActivity('employee_update', { id: editingEmployee.id, ...payload });
       } else {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from('employees')
-          .insert([{ ...payload, is_active: true }]);
+          .insert([{ ...payload, is_active: true }])
+          .select();
         if (error) throw error;
+        const newEmployee = data[0];
+        await generateAssignmentWeeksForEmployee(newEmployee);
         logActivity('employee_create', payload);
       }
 
@@ -197,6 +215,48 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       onUpdate(true);
     } catch (err) {
       console.error('Error saving employee:', err);
+    }
+  };
+
+  const handleRemoveEmployee = async () => {
+    if (!editingEmployee) return;
+    if (!confirm('Are you sure you want to remove this employee? This will set them to inactive and remove all future assignments.')) return;
+
+    try {
+      const currentWeek = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
+      
+      // 1. Set employee to inactive
+      await supabase.from('employees').update({ is_active: false }).eq('id', editingEmployee.id);
+      
+      // 2. Delete future assignments
+      await supabase.from('assignment_weeks').delete().eq('employee_id', editingEmployee.id).gte('week_start', currentWeek);
+      
+      logActivity('employee_remove', { id: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
+      
+      setEditingEmployee(null);
+      onUpdate(true);
+    } catch (err) {
+      console.error('Error removing employee:', err);
+    }
+  };
+
+  const handleNuclearDelete = async () => {
+    if (!editingEmployee) return;
+    if (!confirm('NUCLEAR OPTION: Are you sure you want to PERMANENTLY delete this employee and ALL their data? This cannot be undone.')) return;
+
+    try {
+      // 1. Delete all assignments
+      await supabase.from('assignment_weeks').delete().eq('employee_id', editingEmployee.id);
+      
+      // 2. Delete employee
+      await supabase.from('employees').delete().eq('id', editingEmployee.id);
+      
+      logActivity('employee_nuclear_delete', { id: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
+      
+      setEditingEmployee(null);
+      onUpdate(true);
+    } catch (err) {
+      console.error('Error nuclear deleting employee:', err);
     }
   };
 
@@ -304,7 +364,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
             />
           </div>
           <div className="flex items-center gap-1 bg-[#0A120F] border border-emerald-900/20 p-1 rounded-xl w-full sm:w-auto overflow-x-auto no-scrollbar">
-            {(['all', 'admin', 'site_manager', 'site_lead', 'client'] as const).map((role) => (
+            {(['all', 'admin', 'site_manager', 'site_lead', 'hr', 'client'] as const).map((role) => (
               <button
                 key={role}
                 onClick={() => setFilterRole(role)}
@@ -469,6 +529,8 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
                       <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-bold border ${
                         emp.role === 'admin' 
                           ? 'text-purple-400 bg-purple-400/10 border-purple-400/20' 
+                          : emp.role === 'hr'
+                          ? 'text-amber-400 bg-amber-400/10 border-amber-400/20'
                           : 'text-blue-400 bg-blue-400/10 border-blue-400/20'
                       }`}>
                         <Shield size={10} />
@@ -641,6 +703,48 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
               </div>
 
               <div className="p-6 grid grid-cols-2 gap-6">
+                {isAddingEmployee && (
+                  <div className="col-span-2 space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Reactivate Inactive Employee</label>
+                      <select 
+                        onChange={(e) => {
+                          const emp = employees.find(e => e.id === e.target.value);
+                          if (emp) {
+                            setEmployeeForm({
+                              first_name: emp.first_name,
+                              last_name: emp.last_name,
+                              email: emp.email,
+                              job_title: emp.job_title || '',
+                              role: emp.role as any,
+                              rotation_group: emp.rotation_group || '',
+                              employee_id_ref: emp.employee_id_ref || ''
+                            });
+                            setEditingEmployee(emp);
+                            setIsAddingEmployee(false);
+                          }
+                        }}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
+                      >
+                        <option value="">Select an inactive employee to reactivate...</option>
+                        {employees.filter(e => !e.is_active).map(e => (
+                          <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {editingEmployee && (
+                      <div className="space-y-2">
+                        <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Reactivation Date</label>
+                        <input 
+                          type="date"
+                          value={rotationForm.anchor_date}
+                          onChange={(e) => setRotationForm(prev => ({ ...prev, anchor_date: e.target.value }))}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="space-y-2">
                   <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">First Name</label>
                   <input 
@@ -695,6 +799,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
                   >
                     <option value="client">BESS Tech (Standard User)</option>
                     <option value="site_manager">Site Manager</option>
+                    <option value="hr">HR Visibility (Read-Only)</option>
                     <option value="admin">Admin (Full Access)</option>
                   </select>
                 </div>
@@ -714,22 +819,38 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
                 </div>
               </div>
 
-              <div className="p-6 bg-black/40 border-t border-white/5 flex justify-end gap-3">
-                <button 
-                  onClick={() => {
-                    setEditingEmployee(null);
-                    setIsAddingEmployee(false);
-                  }}
-                  className="px-6 py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-bold text-white transition-all"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={handleSaveEmployee}
-                  className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 rounded-xl text-sm font-bold text-black transition-all shadow-lg shadow-emerald-500/20"
-                >
-                  {isAddingEmployee ? 'Create Employee' : 'Save Changes'}
-                </button>
+              <div className="p-6 bg-black/40 border-t border-white/5 flex justify-between gap-3">
+                <div className="flex gap-3">
+                  <button 
+                    onClick={handleRemoveEmployee}
+                    className="px-6 py-2.5 bg-amber-500/10 hover:bg-amber-500/20 rounded-xl text-sm font-bold text-amber-500 transition-all"
+                  >
+                    Remove Employee
+                  </button>
+                  <button 
+                    onClick={handleNuclearDelete}
+                    className="px-6 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 rounded-xl text-sm font-bold text-rose-500 transition-all"
+                  >
+                    Nuclear Delete
+                  </button>
+                </div>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => {
+                      setEditingEmployee(null);
+                      setIsAddingEmployee(false);
+                    }}
+                    className="px-6 py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-bold text-white transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleSaveEmployee}
+                    className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 rounded-xl text-sm font-bold text-black transition-all shadow-lg shadow-emerald-500/20"
+                  >
+                    {isAddingEmployee ? 'Create Employee' : 'Save Changes'}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>

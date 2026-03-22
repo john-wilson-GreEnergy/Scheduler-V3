@@ -12,6 +12,8 @@ export type LogEventType =
   | 'safety_score_update'
   | 'employee_update'
   | 'employee_create'
+  | 'employee_remove'
+  | 'employee_nuclear_delete'
   | 'action_completed'
   | 'action_confirmed'
   | 'batch_update_roles'

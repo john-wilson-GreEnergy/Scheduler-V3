@@ -34,7 +34,7 @@ const rotationData = {
     "ricardo.corpus@greenergyresources.com",
     "robert.beesler@greenergyresources.com",
     "ryan.pryor@greenergyresources.com",
-    "trenton.ward@greenergyresources.com",
+    "trent.war@greenergyresources.com",
     "tristen.cantin@greenergyresources.com"
   ],
   C: [

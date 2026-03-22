@@ -1,20 +1,20 @@
 import { useState, useEffect } from 'react';
 import Chat from './Chat';
-import { Jobsite } from '../types';
+import { Jobsite, JobsiteGroup } from '../types';
 import { MessageSquare, ChevronLeft, Search } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
-export default function AdminChatView({ jobsites }: { jobsites: Jobsite[] }) {
-  const [selectedChat, setSelectedChat] = useState<{ id?: string, group?: string, name: string } | null>(null);
+export default function AdminChatView({ jobsites, jobsiteGroups }: { jobsites: Jobsite[], jobsiteGroups: JobsiteGroup[] }) {
+  const [selectedChat, setSelectedChat] = useState<{ id?: string, group?: string, groupName?: string, name: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [highlightKeyword, setHighlightKeyword] = useState<string>('');
 
   const activeJobsites = jobsites.filter(j => j.is_active);
   const inactiveJobsites = jobsites.filter(j => !j.is_active);
-  const groups = Array.from(new Set(jobsites.map(j => j.jobsite_group).filter(Boolean)));
-  const ungroupedActiveSites = activeJobsites.filter(j => !j.jobsite_group);
-  const ungroupedInactiveSites = inactiveJobsites.filter(j => !j.jobsite_group);
+  const groups = jobsiteGroups;
+  const ungroupedActiveSites = activeJobsites.filter(j => !j.group_id);
+  const ungroupedInactiveSites = inactiveJobsites.filter(j => !j.group_id);
 
   useEffect(() => {
     if (searchQuery.length < 3) {
@@ -25,7 +25,7 @@ export default function AdminChatView({ jobsites }: { jobsites: Jobsite[] }) {
     const searchMessages = async () => {
       const { data } = await supabase
         .from('chat_messages')
-        .select('id, content, user_name, created_at, jobsite_id, jobsite_group')
+        .select('id, content, user_name, created_at, jobsite_id, jobsite_group, jobsite_group_name')
         .ilike('content', `%${searchQuery}%`)
         .limit(20);
       
@@ -55,12 +55,12 @@ export default function AdminChatView({ jobsites }: { jobsites: Jobsite[] }) {
               <button key={msg.id} onClick={() => {
                 setHighlightKeyword(searchQuery);
                 let chatName = 'Chat';
-                if (msg.jobsite_group) chatName = `${msg.jobsite_group} (Group)`;
+                if (msg.jobsite_group) chatName = `${msg.jobsite_group_name || msg.jobsite_group} (Group)`;
                 else if (msg.jobsite_id) {
                     const site = jobsites.find(j => j.id === msg.jobsite_id);
                     chatName = site ? site.jobsite_name : 'Jobsite Chat';
                 }
-                setSelectedChat({ id: msg.jobsite_id, group: msg.jobsite_group, name: chatName });
+                setSelectedChat({ id: msg.jobsite_id, group: msg.jobsite_group, groupName: msg.jobsite_group_name, name: chatName });
               }} className="w-full p-3 bg-white/5 rounded-lg text-left hover:bg-white/10">
                 <p className="text-sm text-white font-bold">{msg.content}</p>
                 <p className="text-xs text-gray-500">{msg.user_name} · {new Date(msg.created_at).toLocaleDateString()}</p>
@@ -72,19 +72,21 @@ export default function AdminChatView({ jobsites }: { jobsites: Jobsite[] }) {
         <div className="space-y-6">
           <section>
             <h3 className="text-xs font-bold text-gray-500 uppercase mb-3">General</h3>
-            <button onClick={() => setSelectedChat({ name: 'General Crew Chat' })} className="flex items-center gap-3 w-full p-3 bg-white/5 rounded-lg hover:bg-white/10 text-white transition-all">
-              <MessageSquare className="text-emerald-500" size={18} />
-              <span className="font-medium">General Crew Chat</span>
-            </button>
+            <div className="space-y-2">
+              <button onClick={() => setSelectedChat({ name: 'Broadcast to All Jobsites', id: 'BROADCAST' })} className="flex items-center gap-3 w-full p-3 bg-emerald-900/20 rounded-lg hover:bg-emerald-900/40 text-emerald-100 transition-all border border-emerald-500/30">
+                <MessageSquare className="text-emerald-500" size={18} />
+                <span className="font-medium">Broadcast to All Jobsites</span>
+              </button>
+            </div>
           </section>
 
           <section>
             <h3 className="text-xs font-bold text-gray-500 uppercase mb-3">Groups</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {groups.map(group => (
-                <button key={group} onClick={() => setSelectedChat({ group, name: group! })} className="flex items-center gap-3 p-3 bg-white/5 rounded-lg hover:bg-white/10 text-white transition-all">
+                <button key={group.id} onClick={() => setSelectedChat({ group: group.name, groupName: group.name, name: group.name })} className="flex items-center gap-3 p-3 bg-white/5 rounded-lg hover:bg-white/10 text-white transition-all">
                   <MessageSquare className="text-emerald-500" size={18} />
-                  <span className="font-medium">{group}</span>
+                  <span className="font-medium">{group.name}</span>
                 </button>
               ))}
             </div>
@@ -124,7 +126,7 @@ export default function AdminChatView({ jobsites }: { jobsites: Jobsite[] }) {
         <ChevronLeft size={16} /> Back to Chat Menu
       </button>
       <div className="flex-1">
-        <Chat jobsiteId={selectedChat.id} jobsiteGroup={selectedChat.group} jobsiteName={selectedChat.name} highlightKeyword={highlightKeyword} />
+        <Chat jobsiteId={selectedChat.id} jobsiteGroup={selectedChat.group} jobsiteGroupName={selectedChat.groupName} jobsiteName={selectedChat.name} highlightKeyword={highlightKeyword} allJobsites={jobsites} />
       </div>
     </div>
   );

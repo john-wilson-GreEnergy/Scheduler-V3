@@ -13,7 +13,10 @@ interface RotationManagementProps {
 }
 
 export default function RotationManagement({ employees, onUpdate }: RotationManagementProps) {
+  const fieldEmployees = useMemo(() => employees.filter(e => e.role !== 'hr'), [employees]);
   const [selectedEmployees, setSelectedEmployees] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterGroup, setFilterGroup] = useState<'All' | 'A' | 'B' | 'C' | 'D'>('All');
   const [rotationType, setRotationType] = useState<'custom' | 'group'>('custom');
   const [rotationGroup, setRotationGroup] = useState<'A' | 'B' | 'C' | 'D'>('A');
   const [weeksOn, setWeeksOn] = useState(3);
@@ -61,46 +64,130 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
   const handlePopulate = async () => {
     setIsPopulating(true);
     try {
-      const startDate = new Date(popStartDate);
-      const weeksToPopulate = [];
-      for (let i = 0; i < popWeeks; i++) {
-        weeksToPopulate.push(addWeeks(startDate, i));
-      }
+      // 1. Get last week per employee
+      const { data: lastWeeks, error: lastWeeksError } = await supabase
+        .from('assignment_weeks')
+        .select('employee_fk, week_start')
+        .order('week_start', { ascending: false });
+
+      if (lastWeeksError) throw lastWeeksError;
+
+      const lastWeekMap = new Map<string, Date>();
+      lastWeeks?.forEach(row => {
+        if (!lastWeekMap.has(row.employee_fk)) {
+          lastWeekMap.set(row.employee_fk, parseISO(row.week_start));
+        }
+      });
+
+      const { data: jobsites } = await supabase.from('jobsites').select('id, jobsite_name');
+      const rotationJobsite = jobsites?.find(j => j.jobsite_name === 'Rotation');
 
       const updates = [];
-      for (const week of weeksToPopulate) {
-        const weekStr = format(week, 'yyyy-MM-dd');
-        for (const emp of employees) {
-          if (isRotationWeek(week, emp.rotation_config, emp.rotation_group)) {
-            updates.push({
-              employee_id: emp.id,
-              email: emp.email,
-              week_start: weekStr,
-              assignment_name: 'Internal',
-              value_type: 'rotation',
-              first_name: emp.first_name,
-              last_name: emp.last_name
+      const now = startOfWeek(new Date(), { weekStartsOn: 1 });
+      const nextWeek = addWeeks(now, 1);
+      const startDate = parseISO(popStartDate);
+      const targetDate = addWeeks(startDate, popWeeks);
+
+      const employeesToPopulate = selectedEmployees.length > 0
+        ? fieldEmployees.filter(e => selectedEmployees.includes(e.id))
+        : fieldEmployees;
+
+      for (const emp of employeesToPopulate) {
+        let current = startDate;
+        while (current <= targetDate) {
+          const weekStr = format(current, 'yyyy-MM-dd');
+          const isRotation = isRotationWeek(current, emp.rotation_config, emp.rotation_group);
+          console.log(`Checking rotation for ${emp.first_name} ${emp.last_name} on ${weekStr}: isRotation=${isRotation}`);
+          
+          // Check if assignment_week exists
+          const { data: existingWeek, error: fetchError } = await supabase
+            .from('assignment_weeks')
+            .select('id, status')
+            .eq('employee_fk', emp.id)
+            .eq('week_start', weekStr)
+            .maybeSingle();
+
+          if (fetchError) throw fetchError;
+
+          let weekData = existingWeek;
+
+          if (!existingWeek) {
+            // Insert new
+            const { data: insertedWeek, error: insertError } = await supabase
+              .from('assignment_weeks')
+              .insert({
+                employee_fk: emp.id,
+                week_start: weekStr,
+                status: isRotation ? 'assigned' : 'unassigned'
+              })
+              .select('id, status')
+              .single();
+            if (insertError) throw insertError;
+            weekData = insertedWeek;
+          } else if (existingWeek.status !== (isRotation ? 'assigned' : 'unassigned')) {
+            // Update status if it changed
+            const { data: updatedWeek, error: updateError } = await supabase
+              .from('assignment_weeks')
+              .update({ status: isRotation ? 'assigned' : 'unassigned' })
+              .eq('id', existingWeek.id)
+              .select('id, status')
+              .single();
+            if (updateError) throw updateError;
+            weekData = updatedWeek;
+          }
+
+          if (isRotation && rotationJobsite && weekData) {
+            // Check if assignment_item exists
+            const { data: existingItem, error: itemFetchError } = await supabase
+              .from('assignment_items')
+              .select('id')
+              .eq('assignment_week_fk', weekData.id)
+              .eq('jobsite_fk', rotationJobsite.id)
+              .maybeSingle();
+            
+            if (itemFetchError) throw itemFetchError;
+
+            if (!existingItem) {
+              console.log(`Creating assignment item for ${emp.first_name} on ${weekStr}`);
+              await supabase.from('assignment_items').insert({
+                assignment_week_fk: weekData.id,
+                jobsite_fk: rotationJobsite.id,
+                days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+                item_order: 0,
+                week_start: weekStr
+              });
+            }
+          } else if (isRotation && !rotationJobsite) {
+            console.error(`Rotation jobsite not found!`);
+          }
+
+          if (isRotation && current.getTime() === nextWeek.getTime()) {
+            const weeksUntil = Math.max(0, Math.round((new Date(weekStr).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
+            const portalMessage = `Update Type: Rotation Assignment\r\nEmployee: ${emp.first_name} ${emp.last_name}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: ${weekStr}\r\nPrevious Assignment: N/A\r\nNew Assignment: Rotation\r\nDays: Mon, Tue, Wed, Thu, Fri, Sat, Sun\r\nWeeks Until New Assignment: ${weeksUntil}`;
+
+            await sendNotification({
+              employeeId: emp.id,
+              title: 'Rotation Assignment',
+              message: portalMessage,
+              type: 'info',
+              sendEmail: true,
+              emailData: {
+                updateType: 'Rotation Assignment',
+                jobsiteName: 'Rotation',
+                weekStartDate: weekStr,
+                customEmailBody: portalMessage
+              }
             });
           }
+          current = addWeeks(current, 1);
         }
       }
-
-      if (updates.length > 0) {
-        const { error } = await supabase
-          .from('assignment_weeks')
-          .upsert(updates);
-        
-        if (error) throw error;
-        alert(`Successfully populated ${updates.length} rotation entries.`);
-        onUpdate();
-        setIsPopulating(false);
-      } else {
-        alert('No rotation entries to populate.');
-        setIsPopulating(false);
-      }
+      alert(`Successfully populated schedule.`);
+      onUpdate();
     } catch (err: any) {
       console.error('Population error:', err);
-      alert(`Failed to populate rotation schedule: ${err.message || JSON.stringify(err)}`);
+      alert(`Failed to populate schedule: ${err.message || JSON.stringify(err)}`);
+    } finally {
       setIsPopulating(false);
     }
   };
@@ -137,7 +224,7 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
     );
   };
 
-  const selectAll = () => setSelectedEmployees(employees.map(e => e.id));
+  const selectAll = () => setSelectedEmployees(fieldEmployees.map(e => e.id));
   const clearSelection = () => setSelectedEmployees([]);
 
   const handleSave = async () => {
@@ -195,13 +282,24 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
             .eq('id', empId);
         }
 
+        const emp = fieldEmployees.find(e => e.id === empId);
+        if (!emp) continue;
+
         // Send notification to employee
+        const portalMessage = `Update Type: Rotation Pattern Updated\r\nEmployee: ${emp.first_name} ${emp.last_name}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: N/A\r\nPrevious Assignment: N/A\r\nNew Assignment: Rotation Pattern Updated\r\nDays: N/A\r\nWeeks Until New Assignment: N/A`;
+
         await sendNotification({
           employeeId: empId,
           title: 'Rotation Pattern Updated',
-          message: `Your work rotation pattern has been updated by an administrator.`,
+          message: portalMessage,
           type: 'info',
-          sendEmail: false // Not critical enough for email, but portal notification is good
+          sendEmail: true,
+          emailData: {
+            updateType: 'Rotation Pattern Updated',
+            jobsiteName: 'Rotation',
+            weekStartDate: new Date().toISOString().split('T')[0],
+            customEmailBody: portalMessage
+          }
         });
       }
 
@@ -220,7 +318,7 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
   useEffect(() => {
     if (selectedEmployees.length === 1) {
       const empId = selectedEmployees[0];
-      const emp = employees.find(e => e.id === empId);
+      const emp = fieldEmployees.find(e => e.id === empId);
       const config = configs[empId];
 
       if (emp?.rotation_group) {
@@ -233,7 +331,7 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
         setAnchorDate(config.anchor_date);
       }
     }
-  }, [selectedEmployees, configs, employees]);
+  }, [selectedEmployees, configs, fieldEmployees]);
 
   return (
     <div className="space-y-6">
@@ -244,7 +342,7 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
         </h3>
         <div className="grid grid-cols-4 gap-4">
           {(['A', 'B', 'C', 'D'] as const).map(group => {
-            const groupEmployees = employees.filter(e => e.rotation_group === group);
+            const groupEmployees = fieldEmployees.filter(e => e.rotation_group === group);
             const groupStyles = {
               A: 'border-white/20',
               B: 'border-red-900/30',
@@ -309,13 +407,51 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
                 </button>
               </div>
             </div>
+            
+            <div className="flex gap-2">
+              <input 
+                type="text"
+                placeholder="Search employees..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-emerald-500 outline-none"
+              />
+              <select
+                value={filterGroup}
+                onChange={(e) => setFilterGroup(e.target.value as any)}
+                className="bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-emerald-500 outline-none"
+              >
+                <option value="All">All Groups</option>
+                <option value="A">Group A</option>
+                <option value="B">Group B</option>
+                <option value="C">Group C</option>
+                <option value="D">Group D</option>
+              </select>
+              <button
+                onClick={() => {
+                  if (filterGroup === 'All') return;
+                  const groupEmployees = fieldEmployees.filter(e => e.rotation_group === filterGroup).map(e => e.id);
+                  setSelectedEmployees(prev => Array.from(new Set([...prev, ...groupEmployees])));
+                }}
+                className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/20 px-4 py-2 rounded-xl text-xs font-bold transition-all"
+              >
+                Select Group
+              </button>
+            </div>
+
             <div className="grid gap-2 max-h-[500px] overflow-y-auto pr-2 scrollbar-hide">
-              {employees.map(emp => {
-                const isSelected = selectedEmployees.includes(emp.id);
-                const groupColor = emp.rotation_group === 'A' ? 'bg-black border border-white/20' :
-                                 emp.rotation_group === 'B' ? 'bg-red-500' :
-                                 emp.rotation_group === 'C' ? 'bg-yellow-500' :
-                                 emp.rotation_group === 'D' ? 'bg-blue-500' : 'bg-emerald-500';
+              {fieldEmployees
+                .filter(emp => {
+                  const matchesSearch = `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(searchQuery.toLowerCase());
+                  const matchesGroup = filterGroup === 'All' || emp.rotation_group === filterGroup;
+                  return matchesSearch && matchesGroup;
+                })
+                .map(emp => {
+                  const isSelected = selectedEmployees.includes(emp.id);
+                  const groupColor = emp.rotation_group === 'A' ? 'bg-black border border-white/20' :
+                                   emp.rotation_group === 'B' ? 'bg-red-500' :
+                                   emp.rotation_group === 'C' ? 'bg-yellow-500' :
+                                   emp.rotation_group === 'D' ? 'bg-blue-500' : 'bg-emerald-500';
 
                 return (
                   <button

@@ -24,7 +24,7 @@ import {
   List as ListIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format, addDays } from 'date-fns';
+import { format, addDays, startOfWeek } from 'date-fns';
 import { IconComponent } from './PortalComponents';
 
 export default function PortalContentManager() {
@@ -35,6 +35,7 @@ export default function PortalContentManager() {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
+  const [schedulingMode, setSchedulingMode] = useState<'custom' | 'weeks'>('custom');
   const [searchTerm, setSearchTerm] = useState('');
 
   const fetchData = async () => {
@@ -53,19 +54,38 @@ export default function PortalContentManager() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (editingItem) {
+      setSchedulingMode(editingItem.scheduling_mode || 'custom');
+    } else {
+      setSchedulingMode('custom');
+    }
+  }, [editingItem]);
+
   const handleSaveAnnouncement = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
+    
+    let start_date = formData.get('start_date') as string;
+    let end_date = formData.get('end_date') as string;
+
+    if (schedulingMode === 'weeks') {
+      const weeks = parseInt(formData.get('weeks_count') as string) || 1;
+      const today = new Date();
+      const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 }); // Monday
+      start_date = format(startOfWeekDate, 'yyyy-MM-dd');
+      end_date = format(addDays(startOfWeekDate, weeks * 7), 'yyyy-MM-dd');
+    }
+
     const data = {
       title: formData.get('title') as string,
       message: formData.get('message') as string,
-      level: formData.get('level') as string,
-      start_date: (formData.get('start_date') as string) || null,
-      end_date: (formData.get('end_date') as string) || null,
+      start_date: start_date || null,
+      end_date: end_date || null,
       active: formData.get('active') === 'on',
-      schedule_type: formData.get('schedule_type') as string || 'none',
-      is_reminder: formData.get('is_reminder') === 'on',
-      duration_days: parseInt(formData.get('duration_days') as string) || 7
+      scheduling_mode: schedulingMode,
+      weeks_count: schedulingMode === 'weeks' ? parseInt(formData.get('weeks_count') as string) : null,
+      is_reminder: formData.get('is_reminder') === 'on'
     };
 
     try {
@@ -74,25 +94,6 @@ export default function PortalContentManager() {
       } else {
         const { data: newAnn, error: insertError } = await supabase.from('announcements').insert(data).select().single();
         if (insertError) throw insertError;
-
-        // If high priority, notify all active employees
-        if (data.level === 'high' && data.active) {
-          const { data: employees } = await supabase.from('employees').select('id').eq('is_active', true);
-          if (employees) {
-            for (const emp of employees) {
-              await sendNotification({
-                employeeId: emp.id,
-                title: `URGENT: ${data.title}`,
-                message: data.message,
-                type: 'alert',
-                sendEmail: true,
-                updateType: 'Announcement',
-                jobsiteName: 'N/A',
-                weekStartDate: new Date().toLocaleDateString()
-              });
-            }
-          }
-        }
       }
       fetchData();
       setIsModalOpen(false);
@@ -146,6 +147,15 @@ export default function PortalContentManager() {
       fetchData();
     } catch (err) {
       console.error('Error deleting item:', err);
+    }
+  };
+
+  const toggleActive = async (id: string, currentActive: boolean, table: string) => {
+    try {
+      await supabase.from(table).update({ active: !currentActive }).eq('id', id);
+      fetchData();
+    } catch (err) {
+      console.error('Error toggling active status:', err);
     }
   };
 
@@ -362,30 +372,43 @@ export default function PortalContentManager() {
                       <div className="text-xs text-gray-500 line-clamp-1 mt-0.5">{isAnnouncement ? item.message : item.description}</div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                        isAnnouncement 
-                          ? (item.level === 'high' ? 'bg-red-500/10 text-red-500' : 'bg-emerald-500/10 text-emerald-500')
-                          : 'bg-blue-500/10 text-blue-500'
-                      }`}>
-                        {isAnnouncement ? item.level : item.category}
-                      </span>
+                      {isAnnouncement ? (
+                        <span className="text-gray-500 text-xs italic">N/A</span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-blue-500/10 text-blue-500">
+                          {item.category}
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-xs text-gray-400 font-mono">
-                      {item.schedule_type && item.schedule_type !== 'none' ? (
-                        <span className="text-emerald-500 font-bold uppercase text-[10px]">{item.schedule_type.replace(/_/g, ' ')} ({item.duration_days || 7}D)</span>
-                      ) : item.recurrence_type && item.recurrence_type !== 'none' ? (
-                        <span className="text-blue-500 font-bold uppercase text-[10px]">{item.recurrence_type} (Day {item.recurrence_day}, {item.duration_days || 7}D)</span>
-                      ) : item.start_date ? (
-                        `${format(new Date(item.start_date), 'MMM d, yyyy')} - ${item.end_date ? format(new Date(item.end_date), 'MMM d, yyyy') : 'No End'}`
+                      {isAnnouncement ? (
+                        item.scheduling_mode === 'weeks' ? (
+                          <span className="text-emerald-500 font-bold uppercase text-[10px]">Scheduled ({item.weeks_count || 1} Weeks)</span>
+                        ) : item.start_date ? (
+                          `${format(new Date(item.start_date), 'MMM d, yyyy')} - ${item.end_date ? format(new Date(item.end_date), 'MMM d, yyyy') : 'No End'}`
+                        ) : (
+                          'Always Active'
+                        )
                       ) : (
-                        'Always Active'
+                        item.schedule_type && item.schedule_type !== 'none' ? (
+                          <span className="text-emerald-500 font-bold uppercase text-[10px]">{item.schedule_type.replace(/_/g, ' ')} ({item.duration_days || 7}D)</span>
+                        ) : item.recurrence_type && item.recurrence_type !== 'none' ? (
+                          <span className="text-blue-500 font-bold uppercase text-[10px]">{item.recurrence_type} (Day {item.recurrence_day}, {item.duration_days || 7}D)</span>
+                        ) : item.start_date ? (
+                          `${format(new Date(item.start_date), 'MMM d, yyyy')} - ${item.end_date ? format(new Date(item.end_date), 'MMM d, yyyy') : 'No End'}`
+                        ) : (
+                          'Always Active'
+                        )
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider">
+                      <button 
+                        onClick={() => toggleActive(item.id, item.active, isAnnouncement ? 'announcements' : 'portal_actions')}
+                        className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-opacity"
+                      >
                         <div className={`w-1.5 h-1.5 rounded-full ${item.active ? 'bg-emerald-500' : 'bg-gray-700'}`} />
                         <span className={item.active ? 'text-emerald-500' : 'text-gray-600'}>{item.active ? 'Active' : 'Inactive'}</span>
-                      </div>
+                      </button>
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -460,6 +483,59 @@ export default function PortalContentManager() {
                     {activeTab === 'announcements' ? (
                       <>
                         <div className="space-y-2 col-span-2">
+                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Scheduling Mode</label>
+                          <div className="flex gap-4">
+                            <button
+                              type="button"
+                              onClick={() => setSchedulingMode('custom')}
+                              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${schedulingMode === 'custom' ? 'bg-emerald-500 text-black' : 'bg-black/40 text-gray-400'}`}
+                            >
+                              Custom Dates
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSchedulingMode('weeks')}
+                              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${schedulingMode === 'weeks' ? 'bg-emerald-500 text-black' : 'bg-black/40 text-gray-400'}`}
+                            >
+                              Scheduled Duration (Weeks)
+                            </button>
+                          </div>
+                        </div>
+
+                        {schedulingMode === 'weeks' ? (
+                          <div className="space-y-2 col-span-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Number of Weeks</label>
+                            <input 
+                              name="weeks_count"
+                              type="number"
+                              min="1"
+                              defaultValue={editingItem?.weeks_count || 1}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <div className="space-y-2">
+                              <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Start Date</label>
+                              <input 
+                                name="start_date"
+                                type="date"
+                                defaultValue={editingItem?.start_date || ''}
+                                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">End Date</label>
+                              <input 
+                                name="end_date"
+                                type="date"
+                                defaultValue={editingItem?.end_date || ''}
+                                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                              />
+                            </div>
+                          </>
+                        )}
+                        <div className="space-y-2 col-span-2">
                           <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Message</label>
                           <textarea 
                             name="message"
@@ -467,41 +543,6 @@ export default function PortalContentManager() {
                             required
                             rows={3}
                             className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all resize-none"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Priority Level</label>
-                          <select 
-                            name="level"
-                            defaultValue={editingItem?.level || 'low'}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
-                          >
-                            <option value="low">Low Priority</option>
-                            <option value="high">High Priority (Red Alert)</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Automated Schedule</label>
-                          <select 
-                            name="schedule_type"
-                            defaultValue={editingItem?.schedule_type || 'none'}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
-                          >
-                            <option value="none">No Schedule (Manual)</option>
-                            <option value="first_week_month">First Week of Month</option>
-                            <option value="last_week_month">Last Week of Month</option>
-                            <option value="first_week_quarter">First Week of Quarter</option>
-                            <option value="last_week_quarter">Last Week of Quarter</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Duration (Days)</label>
-                          <input 
-                            name="duration_days"
-                            type="number"
-                            placeholder="e.g. 7"
-                            defaultValue={editingItem?.duration_days || 7}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
                           />
                         </div>
                         <div className="flex items-center gap-3 pt-6">
