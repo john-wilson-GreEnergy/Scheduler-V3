@@ -6,7 +6,19 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resendClient: Resend | null = null;
+
+function getResendClient() {
+  if (!resendClient) {
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+      console.warn("RESEND_API_KEY is not set. Email notifications will be disabled.");
+      return null;
+    }
+    resendClient = new Resend(apiKey);
+  }
+  return resendClient;
+}
 
 async function startServer() {
   const app = express();
@@ -17,6 +29,12 @@ async function startServer() {
   // API routes
   app.post("/api/send-email", async (req, res) => {
     const { to, subject, employeeName, updateType, jobsiteName, weekStartDate, updateDetails, previousAssignment, newAssignment, travelDate } = req.body;
+    
+    const resend = getResendClient();
+    if (!resend) {
+      return res.status(503).json({ success: false, error: "Email service is not configured (missing API key)." });
+    }
+
     try {
       const data = await resend.emails.send({
         from: 'GreEnergy Scheduler <notifications@greenergyresources.org>',
