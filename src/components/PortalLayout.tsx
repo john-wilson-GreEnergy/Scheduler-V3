@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Bell, LogOut, Construction, RefreshCw, Search, Command, UserCircle, ShieldCheck, ExternalLink, Menu, X as CloseIcon, Users } from 'lucide-react';
+import { Bell, LogOut, Construction, RefreshCw, Search, Command, UserCircle, ShieldCheck, ExternalLink, Menu, X as CloseIcon, Users, MoreHorizontal } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { format, startOfWeek } from 'date-fns';
 import NotificationPanel from './NotificationPanel';
 import CommandPalette from './CommandPalette';
+import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { haptics } from '../services/hapticsService';
 import { Capacitor } from '@capacitor/core';
+import { StatusBar, Style } from '@capacitor/status-bar';
 
 interface PortalLayoutProps {
   children: React.ReactNode;
@@ -34,6 +36,8 @@ export default function PortalLayout({
   const [unreadCount, setUnreadCount] = useState(0);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -85,7 +89,15 @@ export default function PortalLayout({
   // Close mobile menu on route change or tab change
   React.useEffect(() => {
     setIsMobileMenuOpen(false);
+    setIsMoreMenuOpen(false);
   }, [location.pathname, activeTab]);
+
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      StatusBar.setStyle({ style: Style.Dark });
+      StatusBar.setBackgroundColor({ color: '#050A08' });
+    }
+  }, []);
 
   const categories = Array.from(new Set(tabs.map(t => t.category || 'General')));
 
@@ -101,91 +113,6 @@ export default function PortalLayout({
         </div>
 
         <nav className="space-y-8">
-          {/* Role Switcher for Mobile */}
-          <div className="lg:hidden space-y-2">
-            <h3 className="text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] px-4 mb-4">
-              Switch Role
-            </h3>
-            <div className="flex flex-col gap-1 px-2">
-              {isSuperAdmin && (
-                <button 
-                  onClick={() => navigate('/admin')}
-                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
-                    location.pathname.startsWith('/admin') 
-                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
-                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                  }`}
-                >
-                  <ShieldCheck size={18} />
-                  Super Admin
-                </button>
-              )}
-              {isAdmin && !isSuperAdmin && (
-                <button 
-                  onClick={() => navigate('/admin')}
-                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
-                    location.pathname.startsWith('/admin') 
-                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
-                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                  }`}
-                >
-                  <ShieldCheck size={18} />
-                  Admin Portal
-                </button>
-              )}
-              {(isAdmin || isHR) && (
-                <button 
-                  onClick={() => navigate('/hr')}
-                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
-                    location.pathname.startsWith('/hr') 
-                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
-                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                  }`}
-                >
-                  <Users size={18} />
-                  HR Portal
-                </button>
-              )}
-              {(isAdmin || isSiteManager) && (
-                <button 
-                  onClick={() => navigate('/site-manager')}
-                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
-                    location.pathname.startsWith('/site-manager') 
-                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
-                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                  }`}
-                >
-                  <UserCircle size={18} />
-                  Site Manager
-                </button>
-              )}
-              {(isAdmin || isSiteLead) && (
-                <button 
-                  onClick={() => navigate('/site-lead')}
-                  className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
-                    location.pathname.startsWith('/site-lead') 
-                      ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
-                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                  }`}
-                >
-                  <UserCircle size={18} />
-                  Site Lead
-                </button>
-              )}
-              <button 
-                onClick={() => navigate('/portal')}
-                className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 ${
-                  location.pathname.startsWith('/portal') 
-                    ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
-                    : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                }`}
-              >
-                <Construction size={18} />
-                BESS Tech
-              </button>
-            </div>
-          </div>
-
           {categories.map(category => (
             <div key={category} className="space-y-2">
               <h3 className="text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] px-4 mb-4">
@@ -232,16 +159,54 @@ export default function PortalLayout({
 
         <button 
           onClick={() => {
-            haptics.notification('WARNING');
+            haptics.notification(NotificationType.Warning);
             handleLogout();
           }}
-          className="w-full flex items-center gap-3 px-4 py-2.5 text-gray-500 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all text-sm font-bold"
+          className="w-full flex items-center gap-3 px-4 py-2.5 text-gray-500 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all text-sm font-bold active-scale"
         >
           <LogOut size={18} />
           Sign Out
         </button>
       </div>
     </div>
+  );
+
+  // Bottom Sheet Component
+  const BottomSheet = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose: () => void, title: string, children: React.ReactNode }) => (
+    <AnimatePresence>
+      {isOpen && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100]"
+          />
+          <motion.div
+            initial={{ y: '100%' }}
+            animate={{ y: 0 }}
+            exit={{ y: '100%' }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="fixed bottom-0 left-0 right-0 bg-[#0A120F] border-t border-white/10 rounded-t-[32px] z-[101] pb-safe max-h-[90vh] overflow-y-auto"
+          >
+            <div className="w-12 h-1.5 bg-white/10 rounded-full mx-auto mt-3 mb-6" />
+            <div className="px-6 pb-8">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-black text-white">{title}</h2>
+                <button 
+                  onClick={onClose}
+                  className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 active-scale"
+                >
+                  <CloseIcon size={18} />
+                </button>
+              </div>
+              {children}
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   );
 
   return (
@@ -288,13 +253,16 @@ export default function PortalLayout({
         <header className="h-20 lg:h-24 border-b border-emerald-900/10 bg-[#050A08]/50 backdrop-blur-xl sticky top-0 z-40 px-4 lg:px-8 flex items-center justify-between pt-safe">
           <div className="flex items-center gap-4 lg:gap-6">
             <button 
-              onClick={() => setIsMobileMenuOpen(true)}
+              onClick={() => {
+                haptics.impact();
+                setIsMobileMenuOpen(true);
+              }}
               className="lg:hidden p-2 text-gray-500 hover:text-emerald-500 transition-colors"
             >
               <Menu size={24} />
             </button>
 
-            <h2 className="text-base lg:text-lg font-bold text-white tracking-tight truncate max-w-[120px] sm:max-w-none">{title}</h2>
+            <h2 className="text-base lg:text-lg font-bold text-white tracking-tight truncate max-w-[160px] sm:max-w-none">{title}</h2>
             
             <div className="hidden sm:block h-4 w-px bg-emerald-900/20" />
 
@@ -419,13 +387,26 @@ export default function PortalLayout({
             )}
 
             <button 
-              onClick={() => setIsNotificationsOpen(true)}
-              className="p-2 lg:p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all relative group"
+              onClick={() => {
+                haptics.impact();
+                setIsNotificationsOpen(true);
+              }}
+              className="p-2 lg:p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all relative group active-scale"
             >
               <Bell size={16} className="text-gray-500 group-hover:text-white transition-colors lg:w-[18px] lg:h-[18px]" />
               {unreadCount > 0 && (
                 <span className="absolute top-2 right-2 w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
               )}
+            </button>
+            
+            <button 
+              onClick={() => {
+                haptics.impact();
+                setIsProfileOpen(true);
+              }}
+              className="w-10 h-10 lg:w-12 lg:h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 font-black text-xs lg:text-sm active-scale"
+            >
+              {employee?.first_name?.[0] || user?.email?.[0]?.toUpperCase() || 'U'}
             </button>
             
             {!Capacitor.isNativePlatform() && (
@@ -440,21 +421,34 @@ export default function PortalLayout({
           </div>
         </header>
 
-        <main className="p-4 lg:p-8 pb-24 lg:pb-8 scrollbar-hide">
-          {children}
+        <main className="flex-1 overflow-y-auto scrollbar-hide p-4 lg:p-8 pb-24 lg:pb-8">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
+              {children}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
 
       {/* Mobile Bottom Navigation */}
       <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#050A08]/90 backdrop-blur-xl border-t border-emerald-900/30 z-40 px-2 py-3 pb-safe">
         <div className="flex items-center justify-around">
-          {tabs.slice(0, 5).map(tab => {
+          {tabs.slice(0, 4).map(tab => {
             const isActive = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
-                onClick={() => onTabChange(tab.id)}
-                className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${
+                onClick={() => {
+                  haptics.impact();
+                  onTabChange(tab.id);
+                }}
+                className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all active-scale ${
                   isActive ? 'text-emerald-500' : 'text-gray-500 hover:text-gray-300'
                 }`}
               >
@@ -465,8 +459,108 @@ export default function PortalLayout({
               </button>
             );
           })}
+          
+          {/* More Button for Mobile */}
+          <button
+            onClick={() => {
+              haptics.impact();
+              setIsMoreMenuOpen(true);
+            }}
+            className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all active-scale ${
+              isMoreMenuOpen ? 'text-emerald-500' : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            <div className={`${isMoreMenuOpen ? 'bg-emerald-500/10' : ''} p-1.5 rounded-lg`}>
+              <MoreHorizontal size={18} />
+            </div>
+            <span className="text-[9px] font-bold tracking-wider">More</span>
+          </button>
         </div>
       </div>
+
+      {/* Bottom Sheets */}
+      <BottomSheet 
+        isOpen={isMoreMenuOpen} 
+        onClose={() => setIsMoreMenuOpen(false)} 
+        title="More Actions"
+      >
+        <div className="grid grid-cols-3 gap-4">
+          {tabs.slice(4).map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => {
+                haptics.impact();
+                onTabChange(tab.id);
+                setIsMoreMenuOpen(false);
+              }}
+              className={`flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border transition-all active-scale ${
+                activeTab === tab.id 
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' 
+                  : 'bg-white/5 border-white/5 text-gray-400'
+              }`}
+            >
+              <div className={activeTab === tab.id ? 'text-emerald-500' : 'text-gray-400'}>
+                {tab.icon}
+              </div>
+              <span className="text-[10px] font-bold text-center leading-tight">{tab.label}</span>
+            </button>
+          ))}
+        </div>
+      </BottomSheet>
+
+      <BottomSheet 
+        isOpen={isProfileOpen} 
+        onClose={() => setIsProfileOpen(false)} 
+        title="Profile & Settings"
+      >
+        <div className="space-y-6">
+          <div className="flex items-center gap-4 p-4 bg-white/5 rounded-3xl border border-white/5">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 font-black text-2xl">
+              {employee?.first_name?.[0] || 'U'}
+            </div>
+            <div>
+              <h3 className="text-lg font-black text-white">{employee?.first_name} {employee?.last_name}</h3>
+              <p className="text-sm text-gray-500">{user?.email}</p>
+              <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase tracking-widest">
+                {employee?.role || 'User'}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2">
+            <button 
+              onClick={() => {
+                haptics.impact();
+                navigate(isEmployeeView ? '/admin' : '/portal');
+                setIsProfileOpen(false);
+              }}
+              className="flex items-center gap-3 p-4 bg-white/5 rounded-2xl border border-white/5 active-scale"
+            >
+              <ShieldCheck size={20} className="text-emerald-500" />
+              <div className="flex-1 text-left">
+                <p className="text-sm font-bold text-white">Switch to {isEmployeeView ? 'Admin' : 'Employee'} Portal</p>
+                <p className="text-[10px] text-gray-500">Access management tools</p>
+              </div>
+              <ExternalLink size={16} className="text-gray-600" />
+            </button>
+
+            <button 
+              onClick={() => {
+                haptics.notification(NotificationType.Warning);
+                handleLogout();
+                setIsProfileOpen(false);
+              }}
+              className="flex items-center gap-3 p-4 bg-red-500/5 rounded-2xl border border-red-500/10 active-scale"
+            >
+              <LogOut size={20} className="text-red-500" />
+              <div className="flex-1 text-left">
+                <p className="text-sm font-bold text-red-500">Sign Out</p>
+                <p className="text-[10px] text-red-500/50">End your current session</p>
+              </div>
+            </button>
+          </div>
+        </div>
+      </BottomSheet>
 
       <AnimatePresence>
         {isNotificationsOpen && employee && (

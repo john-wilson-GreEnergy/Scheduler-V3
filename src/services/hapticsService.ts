@@ -1,44 +1,50 @@
-import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { Capacitor } from '@capacitor/core';
 
 export const haptics = {
   impact: async (style: ImpactStyle = ImpactStyle.Light) => {
     if (Capacitor.isNativePlatform()) {
-      await Haptics.impact({ style });
+      try {
+        await Haptics.impact({ style });
+      } catch (e) {
+        console.warn('Haptics not available', e);
+      }
     }
   },
-  
-  notification: async (type: 'SUCCESS' | 'WARNING' | 'ERROR' = 'SUCCESS') => {
+  notification: async (type: NotificationType = NotificationType.Success) => {
     if (Capacitor.isNativePlatform()) {
-      // Mapping to Capacitor types
-      const capType = type === 'SUCCESS' ? 'SUCCESS' : type === 'WARNING' ? 'WARNING' : 'ERROR';
-      // Note: Capacitor Haptics.notification uses specific string values
-      // @ts-ignore - Capacitor types can be strict
-      await Haptics.notification({ type: capType });
+      try {
+        await Haptics.notification({ type });
+      } catch (e) {
+        console.warn('Haptics not available', e);
+      }
     }
   },
-
   selectionStart: async () => {
     if (Capacitor.isNativePlatform()) {
-      await Haptics.selectionStart();
+      try {
+        await Haptics.selectionStart();
+      } catch (e) {
+        console.warn('Haptics not available', e);
+      }
     }
   },
-
   selectionChanged: async () => {
     if (Capacitor.isNativePlatform()) {
-      await Haptics.selectionChanged();
+      try {
+        await Haptics.selectionChanged();
+      } catch (e) {
+        console.warn('Haptics not available', e);
+      }
     }
   },
-
   selectionEnd: async () => {
     if (Capacitor.isNativePlatform()) {
-      await Haptics.selectionEnd();
-    }
-  },
-
-  vibrate: async () => {
-    if (Capacitor.isNativePlatform()) {
-      await Haptics.vibrate();
+      try {
+        await Haptics.selectionEnd();
+      } catch (e) {
+        console.warn('Haptics not available', e);
+      }
     }
   }
 };

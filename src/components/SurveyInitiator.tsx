@@ -6,6 +6,7 @@ import { Employee } from '../types';
 import { format, startOfWeek } from 'date-fns';
 import { Plus, MessageSquare } from 'lucide-react';
 import { parseAssignmentNames } from '../utils/assignmentParser';
+import { NativeAlert } from './NativeAlert';
 
 import { Role } from '../types';
 import { SurveyType } from '../types/surveys';
@@ -39,6 +40,11 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
   const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
   const [eligibleTargets, setEligibleTargets] = useState<Employee[]>([]);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [alertConfig, setAlertConfig] = useState<{ isOpen: boolean; title: string; message: string; type?: 'info' | 'warning' | 'error' }>({
+    isOpen: false,
+    title: '',
+    message: ''
+  });
 
   const handleStartSurvey = async () => {
     let assignmentNames: string[] = [];
@@ -58,13 +64,18 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       const { data: userAssignments, error: assignError } = await supabase
         .from('assignment_weeks')
         .select('id, week_start, assignment_name')
-        .eq('email', email)
+        .eq('employee_fk', userId) // Use userId (UUID) instead of email
         .lte('week_start', todayStr)
         .order('week_start', { ascending: false })
         .limit(1);
         
       if (!userAssignments || userAssignments.length === 0) {
-        alert('No jobsite assignment found for this week.');
+        setAlertConfig({
+          isOpen: true,
+          title: 'No Assignment',
+          message: 'No jobsite assignment found for this week. You must be assigned to a jobsite to start a survey.',
+          type: 'warning'
+        });
         return;
       }
       
@@ -102,7 +113,12 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
         
       if (targetsError) {
         console.error('Error fetching targets:', targetsError);
-        alert(`Error fetching eligible employees (targets): ${targetsError.message}`);
+        setAlertConfig({
+          isOpen: true,
+          title: 'Error',
+          message: `Error fetching eligible employees: ${targetsError.message}`,
+          type: 'error'
+        });
         return;
       }
       targets = allTargets || [];
@@ -123,7 +139,12 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       
     if (targetAssignError) {
       console.error('Error fetching target assignments:', targetAssignError);
-      alert(`Error fetching eligible employees (assignments): ${targetAssignError.message}`);
+      setAlertConfig({
+        isOpen: true,
+        title: 'Error',
+        message: `Error fetching eligible employees: ${targetAssignError.message}`,
+        type: 'error'
+      });
       return;
     }
 
@@ -195,6 +216,14 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
           weekStartDate={weekStartDate} 
         />
       )}
+
+      <NativeAlert 
+        isOpen={alertConfig.isOpen}
+        onClose={() => setAlertConfig(prev => ({ ...prev, isOpen: false }))}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        type={alertConfig.type}
+      />
     </>
   );
 };

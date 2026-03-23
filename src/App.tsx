@@ -11,15 +11,26 @@ import MobileSplashScreen from './components/MobileSplashScreen';
 import { RefreshCw, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { NotificationProvider } from './components/NotificationToast';
+import { BiometricAuth } from './components/BiometricAuth';
+import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { Capacitor } from '@capacitor/core';
 
 export default function App() {
   const { user, isAdmin, isSiteManager, isSiteLead, isHR, loading, isLoggingIn, handleLogin } = useAuth();
   const [showSplash, setShowSplash] = useState(true);
+  const [isBiometricOpen, setIsBiometricOpen] = useState(false);
 
   useEffect(() => {
+    // Configure Status Bar for Native
+    if (Capacitor.isNativePlatform()) {
+      StatusBar.setStyle({ style: Style.Dark });
+      StatusBar.setBackgroundColor({ color: '#050A08' });
+    }
+
     console.log('App: Loading state changed:', loading);
     if (!loading) {
-      // Keep splash for at least 2 seconds for effect
       const timer = setTimeout(() => {
         console.log('App: Hiding splash screen');
         setShowSplash(false);
@@ -28,20 +39,31 @@ export default function App() {
     }
   }, [loading]);
 
+  const onLoginClick = async () => {
+    await Haptics.impact({ style: ImpactStyle.Medium });
+    setIsBiometricOpen(true);
+  };
+
+  const handleBiometricSuccess = () => {
+    setIsBiometricOpen(false);
+    handleLogin();
+  };
+
   if (showSplash) {
     return <MobileSplashScreen />;
   }
 
   return (
     <ErrorBoundary>
-      <Routes>
-        <Route path="/map" element={<StandaloneMap />} />
+      <NotificationProvider>
+        <Routes>
+          <Route path="/map" element={<StandaloneMap />} />
 
         <Route
           path="/login"
           element={
             !user ? (
-              <div className="min-h-screen bg-[#050A08] flex items-center justify-center p-6">
+              <div className="min-h-screen bg-[#050A08] flex items-center justify-center p-6 pt-safe pb-safe">
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
@@ -51,15 +73,15 @@ export default function App() {
                     <img src="/logo.png" alt="Greenergy Logo" className="h-16 object-contain" referrerPolicy="no-referrer" />
                     <div className="flex flex-col items-start justify-center text-left">
                       <span className="text-white font-bold text-2xl leading-none tracking-tight">GreEnergy</span>
-                      <span className="text-emerald-500 font-bold text-[0.65rem] uppercase tracking-[0.2em] leading-tight mt-1">RESOURCES</span>
+                      <span className="text-emerald-500 font-bold text-[0.65rem] uppercase tracking-[0.2em] mt-1">RESOURCES</span>
                     </div>
                   </div>
                   <h1 className="text-3xl font-bold text-white mb-2">Portal Access</h1>
                   <p className="text-gray-400 mb-8">Sign in to access your dashboard and company resources.</p>
                   <button
-                    onClick={handleLogin}
+                    onClick={onLoginClick}
                     disabled={isLoggingIn}
-                    className={`w-full py-4 ${isLoggingIn ? 'bg-emerald-900/50 text-emerald-500' : 'bg-emerald-500 hover:bg-emerald-400 text-black'} font-bold rounded-2xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20`}
+                    className={`w-full py-4 ${isLoggingIn ? 'bg-emerald-900/50 text-emerald-500' : 'bg-emerald-500 hover:bg-emerald-400 text-black'} font-bold rounded-2xl transition-all active-scale flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20`}
                   >
                     {isLoggingIn ? (
                       <>
@@ -161,6 +183,13 @@ export default function App() {
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <BiometricAuth 
+        isOpen={isBiometricOpen} 
+        onSuccess={handleBiometricSuccess} 
+        onCancel={() => setIsBiometricOpen(false)} 
+        type="face"
+      />
+      </NotificationProvider>
     </ErrorBoundary>
   );
 }

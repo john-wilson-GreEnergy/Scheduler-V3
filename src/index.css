@@ -10,12 +10,59 @@
 }
 
 @layer base {
+  :root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+  }
+
   body {
-    @apply bg-bg text-gray-300 antialiased;
+    @apply bg-bg text-gray-300 antialiased overflow-x-hidden;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
   }
 }
 
 @layer utilities {
+  .pt-safe {
+    padding-top: var(--safe-top);
+  }
+  .pb-safe {
+    padding-bottom: var(--safe-bottom);
+  }
+  .pl-safe {
+    padding-left: var(--safe-left);
+  }
+  .pr-safe {
+    padding-right: var(--safe-right);
+  }
+  
+  .mt-safe {
+    margin-top: var(--safe-top);
+  }
+  .mb-safe {
+    margin-bottom: var(--safe-bottom);
+  }
+
+  .h-screen-safe {
+    height: calc(100vh - var(--safe-top) - var(--safe-bottom));
+  }
+
+  .min-h-screen-safe {
+    min-height: calc(100vh - var(--safe-top) - var(--safe-bottom));
+  }
+
+  /* Native-like active states */
+  .active-scale {
+    @apply active:scale-[0.97] transition-transform duration-100;
+  }
+
+  .active-opacity {
+    @apply active:opacity-70 transition-opacity duration-100;
+  }
+
+  /* Hide scrollbars but keep functionality */
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
@@ -38,21 +85,6 @@
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(16, 185, 129, 0.4);
-  }
-  .pb-safe {
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-  .pt-safe {
-    padding-top: env(safe-area-inset-top);
-  }
-  .pl-safe {
-    padding-left: env(safe-area-inset-left);
-  }
-  .pr-safe {
-    padding-right: env(safe-area-inset-right);
-  }
-  .min-h-screen-safe {
-    min-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   }
 }
 
