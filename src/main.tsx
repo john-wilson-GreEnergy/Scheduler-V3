@@ -6,6 +6,8 @@ import App from './App.tsx';
 import './index.css';
 import { registerSW } from 'virtual:pwa-register';
 
+console.log('⚡️ ⚡️ ⚡️ MAIN_V11_LOADED ⚡️ ⚡️ ⚡️');
+
 // Register service worker for PWA
 registerSW({ immediate: true });
 

@@ -65,7 +65,7 @@ export default function MobileSplashScreen() {
       </motion.div>
 
       <div className="absolute bottom-12 text-gray-600 text-[10px] uppercase tracking-[0.4em] font-bold">
-        Secure Portal v2.0
+        Secure Portal v11.0
       </div>
     </div>
   );

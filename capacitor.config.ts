@@ -2,10 +2,10 @@ import { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.greenergyresources.portal',
-  appName: 'Greenergy Resources Portal',
+  appName: 'Greenergy Portal V11',
   webDir: 'dist',
-  server: {
-    androidScheme: 'https'
+  ios: {
+    contentInset: 'always'
   }
 };
 

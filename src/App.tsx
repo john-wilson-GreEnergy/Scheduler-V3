@@ -13,13 +13,15 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
-  const { user, isAdmin, isSiteManager, isSiteLead, isHR, loading, handleLogin } = useAuth();
+  const { user, isAdmin, isSiteManager, isSiteLead, isHR, loading, isLoggingIn, handleLogin } = useAuth();
   const [showSplash, setShowSplash] = useState(true);
 
   useEffect(() => {
+    console.log('App: Loading state changed:', loading);
     if (!loading) {
       // Keep splash for at least 2 seconds for effect
       const timer = setTimeout(() => {
+        console.log('App: Hiding splash screen');
         setShowSplash(false);
       }, 2000);
       return () => clearTimeout(timer);
@@ -56,14 +58,29 @@ export default function App() {
                   <p className="text-gray-400 mb-8">Sign in to access your dashboard and company resources.</p>
                   <button
                     onClick={handleLogin}
-                    className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-black font-bold rounded-2xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20"
+                    disabled={isLoggingIn}
+                    className={`w-full py-4 ${isLoggingIn ? 'bg-emerald-900/50 text-emerald-500' : 'bg-emerald-500 hover:bg-emerald-400 text-black'} font-bold rounded-2xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20`}
                   >
-                    <User size={20} />
-                    Sign In with Company Account
+                    {isLoggingIn ? (
+                      <>
+                        <RefreshCw size={20} className="animate-spin" />
+                        Logging in...
+                      </>
+                    ) : (
+                      <>
+                        <User size={20} />
+                        Sign In with Company Account
+                      </>
+                    )}
                   </button>
                   <p className="mt-6 text-xs text-gray-500">
                     Authorized access only. All activities are monitored.
                   </p>
+                  <div className="mt-8 text-center border-t border-white/10 pt-4">
+                    <p className="text-emerald-500 font-mono text-[12px] uppercase tracking-[0.3em] font-bold">
+                      ⚡️ Build v11.0 ⚡️
+                    </p>
+                  </div>
                 </motion.div>
               </div>
             ) : (

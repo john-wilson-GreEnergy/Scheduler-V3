@@ -7,6 +7,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { format, startOfWeek } from 'date-fns';
 import NotificationPanel from './NotificationPanel';
 import CommandPalette from './CommandPalette';
+import { haptics } from '../services/hapticsService';
+import { Capacitor } from '@capacitor/core';
 
 interface PortalLayoutProps {
   children: React.ReactNode;
@@ -193,7 +195,10 @@ export default function PortalLayout({
                 {tabs.filter(t => (t.category || 'General') === category).map(tab => (
                   <button 
                     key={tab.id}
-                    onClick={() => onTabChange(tab.id)}
+                    onClick={() => {
+                      haptics.impact();
+                      onTabChange(tab.id);
+                    }}
                     className={`w-full px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-3 group ${
                       activeTab === tab.id 
                         ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.05)]' 
@@ -226,7 +231,10 @@ export default function PortalLayout({
         </div>
 
         <button 
-          onClick={handleLogout}
+          onClick={() => {
+            haptics.notification('WARNING');
+            handleLogout();
+          }}
           className="w-full flex items-center gap-3 px-4 py-2.5 text-gray-500 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all text-sm font-bold"
         >
           <LogOut size={18} />
@@ -237,7 +245,7 @@ export default function PortalLayout({
   );
 
   return (
-    <div className="min-h-screen bg-[#050A08] text-gray-300 font-sans selection:bg-emerald-500/30 selection:text-emerald-200 flex flex-col lg:flex-row">
+    <div className="min-h-screen bg-[#050A08] text-gray-300 font-sans selection:bg-emerald-500/30 selection:text-emerald-200 flex flex-col lg:flex-row pb-safe">
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-72 border-r border-emerald-900/20 bg-zinc-950 sticky top-0 h-screen overflow-y-auto scrollbar-hide flex-col shrink-0">
         <SidebarContent />
@@ -277,7 +285,7 @@ export default function PortalLayout({
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-20 border-b border-emerald-900/10 bg-[#050A08]/50 backdrop-blur-xl sticky top-0 z-40 px-4 lg:px-8 flex items-center justify-between">
+        <header className="h-20 lg:h-24 border-b border-emerald-900/10 bg-[#050A08]/50 backdrop-blur-xl sticky top-0 z-40 px-4 lg:px-8 flex items-center justify-between pt-safe">
           <div className="flex items-center gap-4 lg:gap-6">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}
@@ -306,7 +314,10 @@ export default function PortalLayout({
               <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/5 ml-2">
                 {isSuperAdmin && (
                   <button 
-                    onClick={() => navigate('/admin')}
+                    onClick={() => {
+                      haptics.impact();
+                      navigate('/admin');
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
                       location.pathname.startsWith('/admin') 
                         ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
@@ -318,7 +329,10 @@ export default function PortalLayout({
                 )}
                 {isAdmin && !isSuperAdmin && (
                   <button 
-                    onClick={() => navigate('/admin')}
+                    onClick={() => {
+                      haptics.impact();
+                      navigate('/admin');
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
                       location.pathname.startsWith('/admin') 
                         ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
@@ -330,7 +344,10 @@ export default function PortalLayout({
                 )}
                 {(isAdmin || isHR) && (
                   <button 
-                    onClick={() => navigate('/hr')}
+                    onClick={() => {
+                      haptics.impact();
+                      navigate('/hr');
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
                       location.pathname.startsWith('/hr') 
                         ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
@@ -342,7 +359,10 @@ export default function PortalLayout({
                 )}
                 {(isAdmin || isSiteManager) && (
                   <button 
-                    onClick={() => navigate('/site-manager')}
+                    onClick={() => {
+                      haptics.impact();
+                      navigate('/site-manager');
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
                       location.pathname.startsWith('/site-manager') 
                         ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' 
@@ -408,13 +428,15 @@ export default function PortalLayout({
               )}
             </button>
             
-            <button 
-              onClick={() => window.open(window.location.origin, '_blank')}
-              className="hidden sm:flex px-4 py-2 bg-emerald-500 text-black rounded-xl text-xs font-bold hover:bg-emerald-400 transition-all items-center gap-2"
-            >
-              <ExternalLink size={14} />
-              Launch App
-            </button>
+            {!Capacitor.isNativePlatform() && (
+              <button 
+                onClick={() => window.open(window.location.origin, '_blank')}
+                className="hidden sm:flex px-4 py-2 bg-emerald-500 text-black rounded-xl text-xs font-bold hover:bg-emerald-400 transition-all items-center gap-2"
+              >
+                <ExternalLink size={14} />
+                Launch App
+              </button>
+            )}
           </div>
         </header>
 
