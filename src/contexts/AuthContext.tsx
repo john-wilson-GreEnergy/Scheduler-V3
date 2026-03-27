@@ -1,10 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { Employee } from '../types';
-import { App } from '@capacitor/app';
-import { Capacitor } from '@capacitor/core';
-
-console.log('⚡️ AUTH_CONTEXT_V11_LOADED');
 
 interface AuthContextType {
   user: any;
@@ -16,33 +12,40 @@ interface AuthContextType {
   isBessTech: boolean;
   isHR: boolean;
   loading: boolean;
-  isLoggingIn: boolean;
   handleLogout: () => Promise<void>;
   handleLogin: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// SIMULATION BYPASS: Force login as john.wilson@greenergyresources.com
+const SIMULATED_EMAIL = 'john.wilson@greenergyresources.com';
+const IS_SIMULATED = false; 
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<any>(IS_SIMULATED ? {
+    id: '00000000-0000-0000-0000-000000000000',
+    email: SIMULATED_EMAIL,
+    user_metadata: { full_name: 'Simulated User' }
+  } : null);
   const [employee, setEmployee] = useState<Employee | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(IS_SIMULATED);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(IS_SIMULATED);
   const [isSiteManager, setIsSiteManager] = useState(false);
   const [isSiteLead, setIsSiteLead] = useState(false);
   const [isBessTech, setIsBessTech] = useState(false);
   const [isHR, setIsHR] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const isInitializing = React.useRef(false);
+  const [loading, setLoading] = useState(!IS_SIMULATED);
 
-  const checkAdminStatus = (role: string | null) => {
+  const checkAdminStatus = (role: string | null, email?: string) => {
+    if (email?.toLowerCase() === 'john.wilson@greenergyresources.com') return true;
     return role === 'admin' || role === 'super_admin';
   };
 
-  const checkRoleStatus = (role: string | null) => {
+  const checkRoleStatus = (role: string | null, email?: string) => {
+    const isSuper = role === 'super_admin' || email?.toLowerCase() === 'john.wilson@greenergyresources.com';
     return {
-      isSuperAdmin: role === 'super_admin',
+      isSuperAdmin: isSuper,
       isSiteManager: role === 'site_manager',
       isSiteLead: role === 'site_lead',
       isBessTech: role === 'bess_tech',
@@ -69,14 +72,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // 2. Fetch user role from user_roles table
-      const { data: roleData, error: roleError } = await supabase
+      let { data: roleData, error: roleError } = await supabase
         .from('user_roles')
         .select('role')
         .eq('user_id', userId)
         .maybeSingle();
 
+      if (!roleData && authUser.email) {
+        console.log('No role found by user_id, trying email:', authUser.email);
+        const res = await supabase.from('user_roles').select('role').ilike('email', authUser.email).maybeSingle();
+        roleData = res.data;
+      }
+
       if (roleError) console.error('Error fetching user role:', roleError);
-      const userRole = roleData?.role || null;
+      let userRole = roleData?.role || null;
+
+      // Hardcoded fallback for super admin email
+      if (authUser.email?.toLowerCase() === 'john.wilson@greenergyresources.com') {
+        console.log('Applying hardcoded super_admin role for:', authUser.email);
+        userRole = 'super_admin';
+      }
 
       if (empRes.data) {
         // 3. Fetch rotation config using employee UUID
@@ -87,140 +102,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           rotation_config: rotRes.data || null
         };
         setEmployee(employeeWithConfig);
-        setIsAdmin(checkAdminStatus(userRole));
-        const roles = checkRoleStatus(userRole);
+        setIsAdmin(checkAdminStatus(userRole, authUser.email));
+        const roles = checkRoleStatus(userRole, authUser.email);
         setIsSuperAdmin(roles.isSuperAdmin);
         setIsSiteManager(roles.isSiteManager);
         setIsSiteLead(roles.isSiteLead);
         setIsBessTech(roles.isBessTech);
         setIsHR(roles.isHR);
+        console.log('Roles set for employee:', { isAdmin: checkAdminStatus(userRole, authUser.email), isSuperAdmin: roles.isSuperAdmin });
       } else {
-        setIsAdmin(checkAdminStatus(userRole));
-        const roles = checkRoleStatus(userRole);
-        setIsSuperAdmin(roles.isSuperAdmin);
-        setIsSiteManager(roles.isSiteManager);
-        setIsSiteLead(roles.isSiteLead);
-        setIsBessTech(roles.isBessTech);
-        setIsHR(roles.isHR);
+        console.log('No employee record found for user');
+        if (IS_SIMULATED) {
+          console.log('Simulation mode: Keeping default admin roles');
+          setIsAdmin(true);
+          setIsSuperAdmin(true);
+        } else {
+          setIsAdmin(checkAdminStatus(userRole, authUser.email));
+          const roles = checkRoleStatus(userRole, authUser.email);
+          setIsSuperAdmin(roles.isSuperAdmin);
+          setIsSiteManager(roles.isSiteManager);
+          setIsSiteLead(roles.isSiteLead);
+          setIsBessTech(roles.isBessTech);
+          setIsHR(roles.isHR);
+          console.log('Roles set for non-employee user:', { isAdmin: checkAdminStatus(userRole, authUser.email), isSuperAdmin: roles.isSuperAdmin });
+        }
       }
     } catch (err) {
       console.error('Error fetching employee data:', err);
-      setIsAdmin(false);
-      setIsSuperAdmin(false);
-      setIsSiteManager(false);
-      setIsSiteLead(false);
-      setIsBessTech(false);
-      setIsHR(false);
+      if (IS_SIMULATED) {
+        console.log('Simulation mode: Error occurred, but keeping admin roles for access');
+        setIsAdmin(true);
+        setIsSuperAdmin(true);
+      } else {
+        setIsAdmin(false);
+        setIsSuperAdmin(false);
+        setIsSiteManager(false);
+        setIsSiteLead(false);
+        setIsBessTech(false);
+        setIsHR(false);
+      }
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    console.log('⚡️ AuthProvider: useEffect triggered');
-    if (isInitializing.current) {
-      console.log('⚡️ AuthProvider: Already initializing, skipping.');
-      return;
-    }
-    isInitializing.current = true;
-
-    // Reusable deep link processor
-    const handleDeepLink = async (url: string) => {
-      console.log('⚡️ handleDeepLink called with URL:', url);
-      if (!url) return;
-
-      if (url.includes('access_token')) {
-        console.log('⚡️ Auth tokens detected in URL, parsing...');
-        setIsLoggingIn(true);
-        
-        try {
-          // Extract tokens from the fragment (#)
-          const hash = url.split('#')[1];
-          if (!hash) {
-            console.error('⚡️ No hash found in deep link URL');
-            return;
-          }
-
-          const params = new URLSearchParams(hash);
-          const access_token = params.get('access_token');
-          const refresh_token = params.get('refresh_token');
-
-          if (access_token && refresh_token) {
-            console.log('⚡️ Manually setting session from tokens...');
-            const { data, error } = await supabase.auth.setSession({
-              access_token,
-              refresh_token,
-            });
-            
-            if (error) {
-              console.error('⚡️ Supabase setSession error:', error);
-            } else if (data.session) {
-              console.log('⚡️ Session successfully set for:', data.session.user.email);
-              setUser(data.session.user);
-              await fetchEmployeeData(data.session.user.id, data.session.user);
-            }
-          } else {
-            console.warn('⚡️ access_token or refresh_token missing in URL hash');
-          }
-        } catch (err) {
-          console.error('⚡️ Failed to parse deep link URL:', err);
-        } finally {
-          setIsLoggingIn(false);
-        }
-      } else {
-        console.log('⚡️ URL does not contain auth tokens, ignoring.');
-      }
-    };
-
-    // Handle deep links and app state changes
-    const setupAppListeners = async () => {
-      try {
-        const platform = Capacitor.getPlatform();
-        const isNative = Capacitor.isNativePlatform();
-        console.log(`⚡️ setupAppListeners: Platform=${platform}, Native=${isNative}`);
-
-        if (!App) {
-          console.error('⚡️ Capacitor App plugin is NOT available!');
-          return;
-        }
-
-        if (isNative) {
-          console.log('⚡️ Native platform: Setting up listeners...');
-          
-          // Listen for app state changes (resume/background)
-          App.addListener('appStateChange', ({ isActive }) => {
-            console.log('⚡️ App state changed. Is active:', isActive);
-            if (isActive) {
-              // Reset logging state after a delay if we returned from browser
-              setTimeout(() => setIsLoggingIn(false), 2000);
-            }
-          });
-
-          // Listen for deep links while app is running
-          App.addListener('appUrlOpen', (event: any) => {
-            console.log('⚡️ Deep Link Received (appUrlOpen):', event.url);
-            handleDeepLink(event.url);
-          });
-
-          // Check for launch URL (app was closed and opened via deep link)
-          console.log('⚡️ Checking for Launch URL...');
-          const launchUrl = await App.getLaunchUrl();
-          console.log('⚡️ Launch URL Result:', launchUrl);
-          if (launchUrl?.url) {
-            handleDeepLink(launchUrl.url);
-          }
-        } else {
-          console.log('⚡️ Web platform: Skipping native listeners.');
-        }
-      } catch (err) {
-        console.error('⚡️ Error in setupAppListeners:', err);
-      }
-    };
-
-    setupAppListeners();
+    console.log('AuthProvider: Initializing auth state...');
     
     const initSession = async () => {
-      console.log('⚡️ initSession started');
+      if (IS_SIMULATED) {
+        console.log('AuthProvider: SIMULATION MODE ACTIVE - Fetching data for:', SIMULATED_EMAIL);
+        await fetchEmployeeData(user.id, user);
+        return;
+      }
+
       if (!supabase) {
         console.error('AuthProvider: Supabase client is not initialized!');
         setLoading(false);
@@ -254,6 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     initSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (IS_SIMULATED) return; // Ignore auth changes in simulation mode
       console.log('AuthProvider: Auth state changed:', _event, session ? 'User found' : 'No user');
       setUser(session?.user ?? null);
       
@@ -286,35 +222,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const handleLogin = async () => {
-    if (!loading && user) return; // Already logged in
-    
-    const isNative = Capacitor.isNativePlatform();
-    // Use a more specific redirect for native
-    const redirectTo = isNative 
-      ? 'com.greenergyresources.portal://login' 
-      : window.location.origin;
-
-    console.log('AuthProvider: Starting login with redirectTo:', redirectTo);
-    setLoading(true);
-    setIsLoggingIn(true);
-
+    if (IS_SIMULATED) {
+      console.log('AuthProvider: Simulation login triggered');
+      return;
+    }
     const { error } = await supabase.auth.signInWithOAuth({ 
       provider: 'google',
       options: {
-        redirectTo,
-        queryParams: {
-          prompt: 'select_account'
-        }
+        redirectTo: window.location.origin
       }
     });
-    
-    if (error) {
-      console.error('Login error:', error);
-      setLoading(false);
-    }
+    if (error) console.error('Login error:', error);
   };
 
   const handleLogout = async () => {
+    if (IS_SIMULATED) {
+      console.log('AuthProvider: Simulation logout triggered (ignored)');
+      return;
+    }
     await supabase.auth.signOut();
     setUser(null);
     setEmployee(null);
@@ -336,10 +261,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isBessTech, 
     isHR,
     loading, 
-    isLoggingIn,
     handleLogout, 
     handleLogin 
-  }), [user, employee, isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isBessTech, isHR, loading, isLoggingIn]);
+  }), [user, employee, isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isBessTech, isHR, loading]);
 
   return (
     <AuthContext.Provider value={value}>

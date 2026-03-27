@@ -41,6 +41,10 @@ export default function PortalLayout({
   const navigate = useNavigate();
   const location = useLocation();
 
+  useEffect(() => {
+    console.log('PortalLayout: current roles:', { isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isHR });
+  }, [isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isHR]);
+
   const isEmployeeView = location.pathname.startsWith('/portal');
 
   useEffect(() => {
@@ -113,6 +117,91 @@ export default function PortalLayout({
         </div>
 
         <nav className="space-y-8">
+          {/* Portal Switcher for Mobile/Sidebar */}
+          <div className="space-y-2">
+            <h3 className="text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] px-4 mb-4">
+              Portals
+            </h3>
+            <div className="grid grid-cols-1 gap-1">
+              {isSuperAdmin && (
+                <button 
+                  onClick={() => navigate('/admin')}
+                  className={`w-full px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/admin') 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <ShieldCheck size={14} />
+                  Super Admin
+                </button>
+              )}
+              {isAdmin && !isSuperAdmin && (
+                <button 
+                  onClick={() => navigate('/admin')}
+                  className={`w-full px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/admin') 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <ShieldCheck size={14} />
+                  Admin
+                </button>
+              )}
+              {(isAdmin || isHR) && (
+                <button 
+                  onClick={() => navigate('/hr')}
+                  className={`w-full px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/hr') 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <Users size={14} />
+                  HR
+                </button>
+              )}
+              {(isAdmin || isSiteManager) && (
+                <button 
+                  onClick={() => navigate('/site-manager')}
+                  className={`w-full px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/site-manager') 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <Construction size={14} />
+                  Site Manager
+                </button>
+              )}
+              {(isAdmin || isSiteLead) && (
+                <button 
+                  onClick={() => navigate('/site-lead')}
+                  className={`w-full px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-3 ${
+                    location.pathname.startsWith('/site-lead') 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <Construction size={14} />
+                  Site Lead
+                </button>
+              )}
+              <button 
+                onClick={() => navigate('/portal')}
+                className={`w-full px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-3 ${
+                  location.pathname.startsWith('/portal') 
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                }`}
+              >
+                <UserCircle size={14} />
+                BESS Tech
+              </button>
+            </div>
+          </div>
+
           {categories.map(category => (
             <div key={category} className="space-y-2">
               <h3 className="text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] px-4 mb-4">
@@ -152,7 +241,7 @@ export default function PortalLayout({
           <div className="flex-1 min-w-0">
             <p className="text-xs font-bold text-white truncate">{user?.email?.split('@')[0]}</p>
             <p className="text-[9px] text-gray-500 uppercase tracking-wider">
-              {isAdmin ? 'Administrator' : isSuperAdmin ? 'Super Admin' : isSiteManager ? 'Site Manager' : isHR ? 'HR Visibility' : 'Employee'}
+              {isSuperAdmin ? 'Super Admin' : isAdmin ? 'Administrator' : isSiteManager ? 'Site Manager' : isSiteLead ? 'Site Lead' : isHR ? 'HR Visibility' : 'Employee'}
             </p>
           </div>
         </div>
@@ -167,6 +256,12 @@ export default function PortalLayout({
           <LogOut size={18} />
           Sign Out
         </button>
+
+        <div className="px-4 py-2">
+          <p className="text-[8px] text-gray-700 font-mono uppercase tracking-widest">
+            Build: 2026-03-24 14:00 UTC
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -484,27 +579,81 @@ export default function PortalLayout({
         onClose={() => setIsMoreMenuOpen(false)} 
         title="More Actions"
       >
-        <div className="grid grid-cols-3 gap-4">
-          {tabs.slice(4).map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => {
-                haptics.impact();
-                onTabChange(tab.id);
-                setIsMoreMenuOpen(false);
-              }}
-              className={`flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border transition-all active-scale ${
-                activeTab === tab.id 
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' 
-                  : 'bg-white/5 border-white/5 text-gray-400'
-              }`}
-            >
-              <div className={activeTab === tab.id ? 'text-emerald-500' : 'text-gray-400'}>
-                {tab.icon}
-              </div>
-              <span className="text-[10px] font-bold text-center leading-tight">{tab.label}</span>
-            </button>
-          ))}
+        <div className="space-y-8">
+          {/* Portal Switcher in More Menu */}
+          <div className="space-y-4">
+            <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Switch Portal</h3>
+            <div className="grid grid-cols-2 gap-2">
+              {isSuperAdmin && (
+                <button 
+                  onClick={() => { navigate('/admin'); setIsMoreMenuOpen(false); }}
+                  className={`flex items-center gap-2 p-3 rounded-xl border text-[10px] font-bold transition-all ${
+                    location.pathname.startsWith('/admin') ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-white/5 border-white/5 text-gray-400'
+                  }`}
+                >
+                  <ShieldCheck size={14} />
+                  Super Admin
+                </button>
+              )}
+              {(isAdmin || isHR) && (
+                <button 
+                  onClick={() => { navigate('/hr'); setIsMoreMenuOpen(false); }}
+                  className={`flex items-center gap-2 p-3 rounded-xl border text-[10px] font-bold transition-all ${
+                    location.pathname.startsWith('/hr') ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-white/5 border-white/5 text-gray-400'
+                  }`}
+                >
+                  <Users size={14} />
+                  HR
+                </button>
+              )}
+              {(isAdmin || isSiteManager) && (
+                <button 
+                  onClick={() => { navigate('/site-manager'); setIsMoreMenuOpen(false); }}
+                  className={`flex items-center gap-2 p-3 rounded-xl border text-[10px] font-bold transition-all ${
+                    location.pathname.startsWith('/site-manager') ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-white/5 border-white/5 text-gray-400'
+                  }`}
+                >
+                  <Construction size={14} />
+                  Site Manager
+                </button>
+              )}
+              <button 
+                onClick={() => { navigate('/portal'); setIsMoreMenuOpen(false); }}
+                className={`flex items-center gap-2 p-3 rounded-xl border text-[10px] font-bold transition-all ${
+                  location.pathname.startsWith('/portal') ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-white/5 border-white/5 text-gray-400'
+                }`}
+              >
+                <UserCircle size={14} />
+                BESS Tech
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Current Portal Tabs</h3>
+            <div className="grid grid-cols-3 gap-4">
+              {tabs.slice(4).map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    haptics.impact();
+                    onTabChange(tab.id);
+                    setIsMoreMenuOpen(false);
+                  }}
+                  className={`flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border transition-all active-scale ${
+                    activeTab === tab.id 
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' 
+                      : 'bg-white/5 border-white/5 text-gray-400'
+                  }`}
+                >
+                  <div className={activeTab === tab.id ? 'text-emerald-500' : 'text-gray-400'}>
+                    {tab.icon}
+                  </div>
+                  <span className="text-[10px] font-bold text-center leading-tight">{tab.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </BottomSheet>
 
@@ -528,21 +677,77 @@ export default function PortalLayout({
           </div>
 
           <div className="grid grid-cols-1 gap-2">
-            <button 
-              onClick={() => {
-                haptics.impact();
-                navigate(isEmployeeView ? '/admin' : '/portal');
-                setIsProfileOpen(false);
-              }}
-              className="flex items-center gap-3 p-4 bg-white/5 rounded-2xl border border-white/5 active-scale"
-            >
-              <ShieldCheck size={20} className="text-emerald-500" />
-              <div className="flex-1 text-left">
-                <p className="text-sm font-bold text-white">Switch to {isEmployeeView ? 'Admin' : 'Employee'} Portal</p>
-                <p className="text-[10px] text-gray-500">Access management tools</p>
-              </div>
-              <ExternalLink size={16} className="text-gray-600" />
-            </button>
+            {isSuperAdmin && !location.pathname.startsWith('/admin') && (
+              <button 
+                onClick={() => {
+                  haptics.impact();
+                  navigate('/admin');
+                  setIsProfileOpen(false);
+                }}
+                className="flex items-center gap-3 p-4 bg-emerald-500/5 rounded-2xl border border-emerald-500/10 active-scale"
+              >
+                <ShieldCheck size={20} className="text-emerald-500" />
+                <div className="flex-1 text-left">
+                  <p className="text-sm font-bold text-white">Switch to Super Admin Portal</p>
+                  <p className="text-[10px] text-gray-500">Full system access</p>
+                </div>
+                <ExternalLink size={16} className="text-gray-600" />
+              </button>
+            )}
+
+            {(isAdmin || isHR) && !location.pathname.startsWith('/hr') && (
+              <button 
+                onClick={() => {
+                  haptics.impact();
+                  navigate('/hr');
+                  setIsProfileOpen(false);
+                }}
+                className="flex items-center gap-3 p-4 bg-white/5 rounded-2xl border border-white/5 active-scale"
+              >
+                <Users size={20} className="text-emerald-500" />
+                <div className="flex-1 text-left">
+                  <p className="text-sm font-bold text-white">Switch to HR Portal</p>
+                  <p className="text-[10px] text-gray-500">Employee records & surveys</p>
+                </div>
+                <ExternalLink size={16} className="text-gray-600" />
+              </button>
+            )}
+
+            {(isAdmin || isSiteManager) && !location.pathname.startsWith('/site-manager') && (
+              <button 
+                onClick={() => {
+                  haptics.impact();
+                  navigate('/site-manager');
+                  setIsProfileOpen(false);
+                }}
+                className="flex items-center gap-3 p-4 bg-white/5 rounded-2xl border border-white/5 active-scale"
+              >
+                <Construction size={20} className="text-emerald-500" />
+                <div className="flex-1 text-left">
+                  <p className="text-sm font-bold text-white">Switch to Site Manager Portal</p>
+                  <p className="text-[10px] text-gray-500">Site schedules & logistics</p>
+                </div>
+                <ExternalLink size={16} className="text-gray-600" />
+              </button>
+            )}
+
+            {!isEmployeeView && (
+              <button 
+                onClick={() => {
+                  haptics.impact();
+                  navigate('/portal');
+                  setIsProfileOpen(false);
+                }}
+                className="flex items-center gap-3 p-4 bg-white/5 rounded-2xl border border-white/5 active-scale"
+              >
+                <UserCircle size={20} className="text-emerald-500" />
+                <div className="flex-1 text-left">
+                  <p className="text-sm font-bold text-white">Switch to BESS Tech Portal</p>
+                  <p className="text-[10px] text-gray-500">My assignments & actions</p>
+                </div>
+                <ExternalLink size={16} className="text-gray-600" />
+              </button>
+            )}
 
             <button 
               onClick={() => {

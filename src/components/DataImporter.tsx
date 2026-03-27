@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Employee } from '../types';
+import { Employee, Jobsite } from '../types';
 import Papa from 'papaparse';
 import { Upload, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface DataImporterProps {
   employees: Employee[];
+  jobsites: Jobsite[];
 }
 
-export default function DataImporter({ employees }: DataImporterProps) {
+export default function DataImporter({ employees, jobsites }: DataImporterProps) {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
@@ -94,20 +95,16 @@ export default function DataImporter({ employees }: DataImporterProps) {
               
               // Insert/Update assignment_weeks
               const weekAssignment = {
-                employee_id: employee.employee_id_ref,
-                email: employee.email,
-                first_name: employee.first_name,
-                last_name: employee.last_name,
+                employee_fk: employee.id,
                 week_start: weekStart,
-                assignment_name: assignmentValueTrimmed, // Keep full string for now
-                value_type: 'jobsite'
+                status: 'assigned'
               };
 
               // Find or create assignment_week
               const { data: existingWeek, error: fetchWeekError } = await supabase
                 .from('assignment_weeks')
                 .select('id')
-                .eq('employee_id', weekAssignment.employee_id)
+                .eq('employee_fk', weekAssignment.employee_fk)
                 .eq('week_start', weekAssignment.week_start)
                 .maybeSingle();
               
@@ -129,23 +126,39 @@ export default function DataImporter({ employees }: DataImporterProps) {
 
               // Insert/Update assignment_items
               // Clear existing items for this week to avoid duplicates
-              await supabase.from('assignment_items').delete().eq('assignment_week_id', weekId);
+              await supabase.from('assignment_items').delete().eq('assignment_week_fk', weekId);
 
               for (let k = 0; k < assignmentParts.length; k++) {
                 const part = assignmentParts[k].trim();
+                
+                // Try to find the jobsite ID
+                const jobsite = jobsites.find(j => 
+                  j.jobsite_name.toLowerCase() === part.toLowerCase() ||
+                  j.jobsite_alias?.toLowerCase() === part.toLowerCase()
+                );
+
+                if (!jobsite) {
+                  console.warn(`Jobsite not found for name: '${part}'`);
+                  // We still insert it but without a jobsite_fk if the schema allows, 
+                  // but based on types.ts it should have a jobsite_fk.
+                  // If we don't have a jobsite_fk, we might skip it or use a placeholder.
+                  continue; 
+                }
+
                 let days;
                 if (assignmentParts.length === 1) {
-                  days = 'Mon,Tue,Wed,Thu,Fri,Sat,Sun';
+                  days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
                 } else {
-                  days = k === 0 ? 'Mon,Tue,Wed' : 'Thu,Fri,Sat';
+                  days = k === 0 ? ['Mon', 'Tue', 'Wed'] : ['Thu', 'Fri', 'Sat', 'Sun'];
                 }
                 
                 const { error: insertItemError } = await supabase
                   .from('assignment_items')
                   .insert({
-                    assignment_week_id: weekId,
-                    jobsite_name: part,
-                    days: days
+                    assignment_week_fk: weekId,
+                    jobsite_fk: jobsite.id,
+                    days: days,
+                    week_start: weekStart
                   });
                 if (insertItemError) throw insertItemError;
               }

@@ -17,19 +17,24 @@ export interface AssignmentWeek {
   week_start: string;
   status: string;
   assignment_type?: string;
-  created_at: string;
+  assignment_name?: string;
+  created_at?: string;
   assignment_items?: AssignmentItem[];
 }
 
 export interface AssignmentItem {
   id: string;
-  assignment_week_fk: string;
+  assignment_week_fk?: string;
+  week_fk?: string;
   jobsite_fk: string;
-  days: string[];
-  item_order: number;
+  employee_fk?: string;
+  day_of_week?: number;
+  is_active?: boolean;
+  days?: string[];
+  item_order?: number;
   assignment_type?: string;
-  week_start: string;
-  created_at: string;
+  week_start?: string;
+  created_at?: string;
   jobsites?: Jobsite;
 }
 

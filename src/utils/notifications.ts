@@ -95,69 +95,20 @@ async function triggerEmailAlert(
   }
 }
 
-import { isRotationWeek } from './rotation';
+import { analyzeWorkforceConflictsBackend } from '../lib/supabase_functions';
 
 /**
  * AI-powered workforce optimization logic.
  * Analyzes schedules and flags potential shortages or conflicts.
+ * Now uses the backend logic for consistency.
  */
 export async function analyzeWorkforceConflicts(weekStart: string) {
   try {
-    // 1. Fetch all jobsites
-    const { data: jobsites } = await supabase.from('jobsites').select('*').eq('is_active', true);
-    if (!jobsites) return;
-
-    // 2. Fetch all assignments for this week
-    const { data: assignments } = await supabase
-      .from('assignment_weeks')
-      .select('*, items:assignment_items(*)')
-      .eq('week_start', weekStart);
-    
-    // 3. Fetch rotation configs
-    const { data: rotations } = await supabase.from('rotation_configs').select('*');
-    const rotationMap: Record<string, any> = {};
-    rotations?.forEach(r => rotationMap[r.employee_fk] = r);
-
-    const weekDate = new Date(weekStart);
-
-    for (const site of jobsites) {
-      const assignedToSite = assignments?.filter(a => 
-        a.items?.some((item: any) => item.jobsite_fk === site.id)
-      ) || [];
-
-      // Check for understaffing
-      const minPersonnel = 2; // Default or from site metadata
-      if (assignedToSite.length < minPersonnel) {
-        // Find admins to notify
-        const { data: admins } = await supabase.from('employees').select('id').eq('role', 'admin');
-        for (const admin of admins || []) {
-          await sendNotification({
-            employeeId: admin.id,
-            title: 'Understaffing Alert',
-            message: `Jobsite "${site.jobsite_name}" is understaffed for week ${weekStart}. (Current: ${assignedToSite.length}, Min: ${minPersonnel})`,
-            type: 'alert'
-          });
-        }
-      }
-
-      // Check for rotation conflicts
-      for (const assignment of assignedToSite) {
-        const config = rotationMap[assignment.employee_fk];
-        if (config && isRotationWeek(weekDate, config)) {
-          // Employee is assigned but should be on rotation
-          const { data: admins } = await supabase.from('employees').select('id').eq('role', 'admin');
-          for (const admin of admins || []) {
-            await sendNotification({
-              employeeId: admin.id,
-              title: 'Rotation Conflict',
-              message: `Employee assigned to "${site.jobsite_name}" should be on rotation for week ${weekStart}.`,
-              type: 'warning'
-            });
-          }
-        }
-      }
-    }
+    const conflicts = await analyzeWorkforceConflictsBackend(weekStart);
+    console.log(`[CONFLICT ANALYSIS] Week: ${weekStart} | Found ${conflicts?.length || 0} issues.`);
+    return conflicts;
   } catch (err) {
     console.error('Error analyzing workforce conflicts:', err);
+    return [];
   }
 }

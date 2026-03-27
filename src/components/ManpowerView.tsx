@@ -37,6 +37,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { isRotationWeek } from '../utils/rotation';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { RotationConfig } from '../types';
+import { fetchCurrentScheduleBackend, assignEmployeeToJobsiteBackend } from '../lib/supabase_functions';
 
 const DraggableEmployee: React.FC<{ employee: Employee, days?: string[], activeId: string | null }> = ({ employee, children, days, activeId }) => {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
@@ -133,28 +134,10 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
     try {
       const weekStr = format(currentWeek, 'yyyy-MM-dd');
       
-      // Fetch assignments for the current week from assignment_weeks table
-      const { data: weeksData, error: weeksError } = await supabase
-        .from('assignment_weeks')
-        .select('*, items:assignment_items(*)')
-        .eq('week_start', weekStr);
-
-      if (weeksError) console.error('Error fetching assignment_weeks:', weeksError);
+      // 1. Fetch current schedule from backend view
+      const scheduleData = await fetchCurrentScheduleBackend(weekStr);
       
-      // Group by employee_id and week_start, merging items
-      const assignmentsMap = new Map<string, any>();
-      weeksData?.forEach(row => {
-        const key = `${row.employee_fk}-${row.week_start}`;
-        if (!assignmentsMap.has(key)) {
-          assignmentsMap.set(key, { ...row, items: [...(row.items || [])] });
-        } else {
-          const existing = assignmentsMap.get(key);
-          existing.items = [...existing.items, ...(row.items || [])];
-        }
-      });
-      const uniqueWeeksData = Array.from(assignmentsMap.values());
-
-      // Fetch rotation configs
+      // 2. Fetch rotation configs
       const { data: rotData } = await supabase
         .from('rotation_configs')
         .select('*');
@@ -165,103 +148,48 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
         setRotationConfigs(configMap);
       }
 
-      const mapped: AssignmentData[] = [];
+      // 3. Process schedule data into AssignmentData format
+      const employeeMap = new Map<string, AssignmentData>();
       const seen = new Set<string>();
 
-      const processWeek = (week: any) => {
-        // Match by employee_fk
-        const employee = fieldEmployees.find(e => e.id === week.employee_fk);
+      scheduleData.forEach((row: any) => {
+        const employee = fieldEmployees.find(e => e.id === row.employee_id);
+        if (!employee || !employee.is_active) return;
+
+        const key = employee.id;
         
-        if (!employee || !employee.is_active) {
-          return;
+        // Determine jobsite name
+        let jobsiteName = row.week_assignment_name || 'Unknown';
+        if (row.jobsite_id) {
+          const jobsite = jobsites.find(j => j.id === row.jobsite_id);
+          if (jobsite) {
+            jobsiteName = jobsite.jobsite_name;
+          }
         }
 
-        // Use a more granular key to allow multiple assignments per employee per week
-        // We will handle duplicate prevention at the assignment level
-        if (week.items && week.items.length > 0) {
-          week.items.forEach((item: any) => {
-            if (item.jobsite_fk) {
-              const key = `${employee.id}-${week.week_start}-${item.jobsite_fk}`;
-              if (!seen.has(key)) {
-                mapped.push({
-                  employee_id: employee.employee_id_ref.toString(),
-                  employee_fk: employee.id,
-                  email: employee.email,
-                  jobsite_names: [getGroupName(jobsites.find(j => j.id === item.jobsite_fk)?.group_id) || jobsites.find(j => j.id === item.jobsite_fk)?.jobsite_name || 'Unknown'],
-                  week_start: week.week_start,
-                  days: [item.days || []],
-                  status: week.status || 'assigned'
-                });
-                seen.add(key);
-              }
-            }
+        if (!employeeMap.has(key)) {
+          employeeMap.set(key, {
+            employee_id: employee.employee_id_ref.toString(),
+            employee_fk: employee.id,
+            email: employee.email,
+            jobsite_names: [jobsiteName],
+            week_start: row.week_start,
+            days: [row.days || []],
+            status: row.week_status || row.value_type || 'assigned'
           });
+          seen.add(`${key}-${jobsiteName}`);
+        } else {
+          const existing = employeeMap.get(key)!;
+          const assignmentKey = `${key}-${jobsiteName}`;
+          if (!seen.has(assignmentKey)) {
+            existing.jobsite_names.push(jobsiteName);
+            existing.days.push(row.days || []);
+            seen.add(assignmentKey);
+          }
         }
-        
-        if (week.assignment_name) {
-          const assignmentNames = parseAssignmentNames(week.assignment_name);
-          
-          assignmentNames.forEach(name => {
-            const trimmedName = name.trim().toLowerCase();
-            
-            // Fallback to assignment_name matching jobsite_name OR group name
-            const jobsite = jobsites.find(j => 
-              j.jobsite_name.toLowerCase() === trimmedName ||
-              j.jobsite_alias?.toLowerCase() === trimmedName ||
-              (j.group_id && getGroupName(j.group_id)?.toLowerCase() === trimmedName)
-            );
-            
-            // If it's a group assignment, get all sites in the group
-            const group = jobsite?.group_id ? jobsiteGroups.find(g => g.id === jobsite.group_id) : null;
-            const sitesInGroup = group ? jobsites.filter(j => j.group_id === group.id) : [];
-            
-            // Try to find days in items
-            const items = week.items?.filter((i: any) => 
-              (group && sitesInGroup.some(s => s.id === i.jobsite_fk)) ||
-              (jobsite && i.jobsite_fk === jobsite.id)
-            );
-            
-            // Combine days from all items, fallback to week.days if items have no days
-            const itemDays = items && items.length > 0 
-              ? Array.from(new Set(items.flatMap((i: any) => i.days || []))) 
-              : undefined;
-            
-            const days = (itemDays && itemDays.length > 0) ? itemDays : week.days;
-            
-            const key = `${employee.id}-${week.week_start}-${group ? `group-${group.id}` : (jobsite ? jobsite.id : trimmedName)}`;
-            if (seen.has(key)) return;
-            
-            if (jobsite) {
-              mapped.push({
-                employee_id: employee.employee_id_ref.toString(),
-                employee_fk: employee.id,
-                email: employee.email,
-                jobsite_names: [jobsite.jobsite_name],
-                week_start: week.week_start,
-                days: [days],
-                status: week.status || 'assigned'
-              });
-              seen.add(key);
-            } else {
-              // Even if jobsite not found in table, track it as a named assignment
-              mapped.push({
-                employee_id: employee.employee_id_ref.toString(),
-                employee_fk: employee.id,
-                email: employee.email,
-                jobsite_names: [name.trim()],
-                week_start: week.week_start,
-                days: [days],
-                status: week.status || 'assigned'
-              });
-              seen.add(key);
-            }
-          });
-        }
-      };
+      });
 
-      uniqueWeeksData.forEach(processWeek);
-      
-      setAssignments(mapped);
+      setAssignments(Array.from(employeeMap.values()));
     } catch (err) {
       console.error('Error fetching manpower data:', err);
     } finally {

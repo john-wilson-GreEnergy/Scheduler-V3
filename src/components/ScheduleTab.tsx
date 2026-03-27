@@ -9,9 +9,10 @@ interface ScheduleTabProps {
   jobsite: Jobsite | null;
   allJobsites: Jobsite[];
   siteEmployees: SiteEmployee[];
+  allEmployees?: any[];
 }
 
-export default function ScheduleTab({ jobsite, allJobsites, siteEmployees }: ScheduleTabProps) {
+export default function ScheduleTab({ jobsite, allJobsites, siteEmployees, allEmployees = [] }: ScheduleTabProps) {
   const [futureAssignments, setFutureAssignments] = useState<any[]>([]);
   const [weeks, setWeeks] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,39 +62,40 @@ export default function ScheduleTab({ jobsite, allJobsites, siteEmployees }: Sch
     const jobsiteIds = groupSites.map((s: any) => s.id);
 
     const data: Record<string, Record<string, string>> = {};
+    const siteRelevantEmpIds = new Set<string>(siteEmployees.map(e => e.id));
+
     futureAssignments.forEach((a: any) => {
-      console.log('Assignment:', a);
       const key = a.employee_fk || '';
       if (!key) return;
-      if (!data[key]) data[key] = {};
       
       const item = a.assignment_items?.find((i: any) => jobsiteIds.includes(i.jobsite_fk));
       const isRotation = a.assignment_type?.toLowerCase() === 'rotation' || item?.assignment_type?.toLowerCase() === 'rotation';
       const isCurrentSite = item !== undefined;
 
       if (isCurrentSite || isRotation) {
+        if (!data[key]) data[key] = {};
         const jobsiteGroup = item?.jobsites?.jobsite_group;
         const jobsiteName = item?.jobsites?.jobsite_name;
-        // If it's a rotation, maybe we should show the assignment_type if jobsite info is missing
         data[key][a.week_start] = jobsiteGroup || jobsiteName || a.assignment_type || 'Assigned';
-      } else {
-        data[key][a.week_start] = ''; // Blank
+        
+        // If they have an assignment to THIS site/group, they are relevant
+        if (isCurrentSite) {
+          siteRelevantEmpIds.add(key);
+        }
       }
     });
 
-    const emps = Array.from(new Set([
-      ...siteEmployees.map((e: any) => e.id),
-      ...Object.keys(data),
-    ])).filter(id => {
-      const emp = siteEmployees.find((e: any) => e.id === id);
-      return !!emp;
+    const emps = Array.from(siteRelevantEmpIds).sort((a, b) => {
+      const empA = allEmployees.find(e => e.id === a) || siteEmployees.find(e => e.id === a);
+      const empB = allEmployees.find(e => e.id === b) || siteEmployees.find(e => e.id === b);
+      return (empA?.last_name || '').localeCompare(empB?.last_name || '');
     });
 
     return { scheduleData: data, allEmps: emps };
-  }, [futureAssignments, siteEmployees, jobsite, allJobsites]);
+  }, [futureAssignments, siteEmployees, allEmployees, jobsite, allJobsites]);
 
   const getEmpName = (employeeId: string) => {
-    const emp = siteEmployees.find((e: any) => e.id === employeeId);
+    const emp = allEmployees.find((e: any) => e.id === employeeId) || siteEmployees.find((e: any) => e.id === employeeId);
     if (emp) return { name: `${emp.first_name} ${emp.last_name}`, title: emp.job_title || '' };
     return { name: 'Unknown', title: '' };
   };

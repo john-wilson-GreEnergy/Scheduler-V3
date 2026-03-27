@@ -32,6 +32,7 @@ export default function PortalContentManager() {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [actions, setActions] = useState<PortalAction[]>([]);
+  const [requiredActions, setRequiredActions] = useState<PortalAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
@@ -40,13 +41,15 @@ export default function PortalContentManager() {
 
   const fetchData = async () => {
     setLoading(true);
-    const [annRes, actRes] = await Promise.all([
+    const [annRes, actRes, reqRes] = await Promise.all([
       supabase.from('announcements').select('*').order('created_at', { ascending: false }),
-      supabase.from('portal_actions').select('*').order('sort_order', { ascending: true })
+      supabase.from('portal_actions').select('*').order('sort_order', { ascending: true }),
+      supabase.from('portal_required_actions').select('*').order('sort_order', { ascending: true })
     ]);
 
     if (annRes.data) setAnnouncements(annRes.data);
     if (actRes.data) setActions(actRes.data);
+    if (reqRes.data) setRequiredActions(reqRes.data);
     setLoading(false);
   };
 
@@ -106,13 +109,16 @@ export default function PortalContentManager() {
   const handleSaveAction = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
+    const priority = formData.get('priority') as 'high' | 'low' || (activeTab === 'actions' ? 'high' : 'low');
+    const table = priority === 'high' ? 'portal_required_actions' : 'portal_actions';
+
     const data = {
       title: formData.get('title') as string,
       description: formData.get('description') as string,
       url: formData.get('url') as string,
       icon: formData.get('icon') as string,
       category: formData.get('category') as string,
-      priority: formData.get('priority') as 'high' | 'low' || (activeTab === 'actions' ? 'high' : 'low'),
+      priority: priority,
       active: formData.get('active') === 'on',
       start_date: formData.get('start_date') as string || null,
       end_date: formData.get('end_date') as string || null,
@@ -128,9 +134,19 @@ export default function PortalContentManager() {
 
     try {
       if (editingItem) {
-        await supabase.from('portal_actions').update(data).eq('id', editingItem.id);
+        // If priority changed, we might need to move between tables, but for simplicity we'll just update the current table
+        // or handle the move if priority changed.
+        const originalTable = editingItem.priority === 'high' ? 'portal_required_actions' : 'portal_actions';
+        
+        if (originalTable !== table) {
+          // Move between tables
+          await supabase.from(originalTable).delete().eq('id', editingItem.id);
+          await supabase.from(table).insert(data);
+        } else {
+          await supabase.from(table).update(data).eq('id', editingItem.id);
+        }
       } else {
-        await supabase.from('portal_actions').insert(data);
+        await supabase.from(table).insert(data);
       }
       fetchData();
       setIsModalOpen(false);
@@ -171,22 +187,34 @@ export default function PortalContentManager() {
                          a.description.toLowerCase().includes(searchTerm.toLowerCase());
     if (activeTab === 'all') return matchesSearch;
     
-    if (activeTab === 'actions') {
-      return matchesSearch && a.priority === 'high';
-    }
     if (activeTab === 'links') {
-      // For links, we strictly show low priority items
-      return matchesSearch && a.priority === 'low';
+      return matchesSearch;
+    }
+    return false;
+  });
+
+  const filteredRequiredActions = requiredActions.filter(a => {
+    const matchesSearch = a.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         a.description.toLowerCase().includes(searchTerm.toLowerCase());
+    if (activeTab === 'all') return matchesSearch;
+    
+    if (activeTab === 'actions') {
+      return matchesSearch;
     }
     return false;
   });
 
   const allItems = [
     ...filteredAnnouncements.map(a => ({ ...a, type: 'announcement' })),
-    ...filteredActions.map(a => ({ ...a, type: 'action' }))
+    ...filteredActions.map(a => ({ ...a, type: 'action' })),
+    ...filteredRequiredActions.map(a => ({ ...a, type: 'required_action' }))
   ].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
 
-  const displayItems = activeTab === 'all' ? allItems : (activeTab === 'announcements' ? filteredAnnouncements : filteredActions);
+  const displayItems = activeTab === 'all' 
+    ? allItems 
+    : (activeTab === 'announcements' 
+        ? filteredAnnouncements 
+        : (activeTab === 'actions' ? filteredRequiredActions : filteredActions));
 
   return (
     <div className="space-y-8 p-8 max-w-7xl mx-auto">
@@ -295,13 +323,13 @@ export default function PortalContentManager() {
                   <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                     isAnnouncement 
                       ? (item.level === 'high' ? 'bg-red-500/10 text-red-500' : 'bg-emerald-500/10 text-emerald-500')
-                      : 'bg-blue-500/10 text-blue-500'
+                      : (item.type === 'required_action' || item.priority === 'high' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500')
                   }`}>
                     {isAnnouncement ? `${item.level} Priority` : item.category}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => { setEditingItem(item); setIsModalOpen(true); setActiveTab(isAnnouncement ? 'announcements' : (item.priority === 'high' ? 'actions' : 'links')); }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
-                    <button onClick={() => handleDelete(item.id, isAnnouncement ? 'announcements' : 'portal_actions')} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                    <button onClick={() => { setEditingItem(item); setIsModalOpen(true); setActiveTab(isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'actions' : 'links')); }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
+                    <button onClick={() => handleDelete(item.id, isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'portal_required_actions' : 'portal_actions'))} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
                   </div>
                 </div>
                 
@@ -403,7 +431,7 @@ export default function PortalContentManager() {
                     </td>
                     <td className="px-6 py-4">
                       <button 
-                        onClick={() => toggleActive(item.id, item.active, isAnnouncement ? 'announcements' : 'portal_actions')}
+                        onClick={() => toggleActive(item.id, item.active, isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'portal_required_actions' : 'portal_actions'))}
                         className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-opacity"
                       >
                         <div className={`w-1.5 h-1.5 rounded-full ${item.active ? 'bg-emerald-500' : 'bg-gray-700'}`} />
@@ -412,8 +440,8 @@ export default function PortalContentManager() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => { setEditingItem(item); setIsModalOpen(true); setActiveTab(isAnnouncement ? 'announcements' : (item.priority === 'high' ? 'actions' : 'links')); }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
-                        <button onClick={() => handleDelete(item.id, isAnnouncement ? 'announcements' : 'portal_actions')} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                        <button onClick={() => { setEditingItem(item); setIsModalOpen(true); setActiveTab(isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'actions' : 'links')); }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
+                        <button onClick={() => handleDelete(item.id, isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'portal_required_actions' : 'portal_actions'))} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
                       </div>
                     </td>
                   </tr>

@@ -10,6 +10,7 @@ import { supabase } from '../lib/supabase';
 import { isRotationWeek } from '../utils/rotation';
 import { startOfWeek, format, subWeeks, parseISO } from 'date-fns';
 import { parseAssignmentNames } from '../utils/assignmentParser';
+import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 
 interface AnalyticsProps {
   employees: Employee[];
@@ -33,49 +34,30 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
       const currentWeekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
       const prevWeekStart = format(subWeeks(parseISO(currentWeekStart), 1), 'yyyy-MM-dd');
 
-      const [currentRes, prevRes] = await Promise.all([
-        supabase.from('assignment_weeks').select('*, items:assignment_items(*)').eq('week_start', currentWeekStart),
-        supabase.from('assignment_weeks').select('*, items:assignment_items(*)').eq('week_start', prevWeekStart)
+      const [currentSchedule, prevSchedule] = await Promise.all([
+        fetchCurrentScheduleBackend(currentWeekStart),
+        fetchCurrentScheduleBackend(prevWeekStart)
       ]);
       
       console.log('Analytics Debug: Data fetched successfully');
       
-      if (currentRes.data && prevRes.data) {
+      if (currentSchedule && prevSchedule) {
         const activeFieldEmployees = employees.filter(e => e.is_active && e.role !== 'hr');
-
-        const mergeAssignments = (data: any[]) => {
-          const assignmentsMap = new Map<string, any>();
-          data?.forEach(row => {
-            const key = `${row.employee_fk}-${row.week_start}`;
-            if (!assignmentsMap.has(key)) {
-              assignmentsMap.set(key, { ...row, items: [...(row.items || [])] });
-            } else {
-              const existing = assignmentsMap.get(key);
-              existing.items = [...existing.items, ...(row.items || [])];
-            }
-          });
-          return Array.from(assignmentsMap.values());
-        };
-
-        const currentMerged = mergeAssignments(currentRes.data);
-        const prevMerged = mergeAssignments(prevRes.data);
 
         const calculateStats = (data: any[]) => {
           const employeeAssignments: Record<string, any[]> = {};
           const jobsiteStaffing: Record<string, number> = {};
           
-          data.forEach(asgn => {
-            const employee = activeFieldEmployees.find(e => e.id === asgn.employee_fk);
+          data.forEach(row => {
+            const employee = activeFieldEmployees.find(e => e.id === row.employee_fk);
             if (!employee) return;
             if (!employeeAssignments[employee.id]) employeeAssignments[employee.id] = [];
-            employeeAssignments[employee.id].push(asgn);
+            employeeAssignments[employee.id].push(row);
 
             // Count staffing per jobsite
-            asgn.items?.forEach((item: any) => {
-              if (item.jobsite_fk) {
-                jobsiteStaffing[item.jobsite_fk] = (jobsiteStaffing[item.jobsite_fk] || 0) + 1;
-              }
-            });
+            if (row.jobsite_fk) {
+              jobsiteStaffing[row.jobsite_fk] = (jobsiteStaffing[row.jobsite_fk] || 0) + 1;
+            }
           });
 
           const assigned = new Set<string>();
@@ -83,24 +65,24 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
           const vacation = new Set<string>();
           const training = new Set<string>();
 
-          Object.entries(employeeAssignments).forEach(([employeeId, assignments]) => {
+          Object.entries(employeeAssignments).forEach(([employeeId, rows]) => {
             let isRotation = false;
             let isVacation = false;
             let isTraining = false;
             let hasJobsiteAssignment = false;
 
-            assignments.forEach(asgn => {
-              const status = asgn.status?.toLowerCase().trim();
-              const assignmentNames = parseAssignmentNames(asgn.assignment_name);
+            rows.forEach(row => {
+              const status = row.status?.toLowerCase().trim();
+              const assignmentNames = parseAssignmentNames(row.assignment_name);
               
               // Check if rotation jobsite ID is in items
-              const hasRotationJobsite = asgn.items?.some((i: any) => i.jobsite_fk === rotationJobsiteId);
+              const isRotationJobsite = row.jobsite_fk === rotationJobsiteId;
               
-              if (status === 'rotation' || assignmentNames.includes('rotation') || hasRotationJobsite) isRotation = true;
+              if (status === 'rotation' || assignmentNames.includes('rotation') || isRotationJobsite) isRotation = true;
               if (status === 'vacation' || assignmentNames.includes('vacation')) isVacation = true;
               if (status === 'training' || assignmentNames.includes('training')) isTraining = true;
               
-              if (asgn.items && asgn.items.length > 0) {
+              if (row.jobsite_fk) {
                 hasJobsiteAssignment = true;
               } else if (assignmentNames.length > 0 && !['vacation', 'rotation', 'training'].includes(assignmentNames[0].toLowerCase())) {
                 hasJobsiteAssignment = true;
@@ -118,8 +100,8 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
           return { assigned: assigned.size, rotation: rotation.size, vacation: vacation.size, training: training.size, unassigned, jobsiteStaffing };
         };
 
-        const currentStats = calculateStats(currentMerged);
-        const prevStats = calculateStats(prevMerged);
+        const currentStats = calculateStats(currentSchedule);
+        const prevStats = calculateStats(prevSchedule);
 
         const getTrend = (curr: number, prev: number) => {
           const change = prev === 0 ? 100 : ((curr - prev) / prev) * 100;

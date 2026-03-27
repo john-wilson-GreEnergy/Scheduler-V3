@@ -14,6 +14,7 @@ import PortalLayout from './PortalLayout';
 import MapPortal from './MapPortal';
 import JobsiteInfoCard from './JobsiteInfoCard';
 import { format, startOfWeek } from 'date-fns';
+import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 
 export default function HRPortal() {
   const { employee } = useAuth();
@@ -49,16 +50,36 @@ export default function HRPortal() {
         .eq('is_active', true)
         .order('last_name');
 
-      const { data: currentAssignments } = await supabase
-        .from('assignment_weeks')
-        .select(`
-          *,
-          assignment_items(*)
-        `)
-        .eq('week_start', currentWeekStart);
+      const currentSchedule = await fetchCurrentScheduleBackend(currentWeekStart);
+
+      // Group by employee to match AssignmentWeek structure
+      const groupedAssignments: Record<string, AssignmentWeek> = {};
+      currentSchedule.forEach(row => {
+        if (!row.employee_fk) return;
+        if (!groupedAssignments[row.employee_fk]) {
+          groupedAssignments[row.employee_fk] = {
+            id: row.id,
+            week_start: row.week_start,
+            employee_fk: row.employee_fk,
+            status: row.status,
+            assignment_name: row.assignment_name,
+            assignment_items: []
+          };
+        }
+        if (row.jobsite_fk) {
+          groupedAssignments[row.employee_fk].assignment_items?.push({
+            id: `item-${row.id}-${row.jobsite_fk}`,
+            week_fk: row.id,
+            jobsite_fk: row.jobsite_fk,
+            employee_fk: row.employee_fk,
+            day_of_week: 1, // Default
+            is_active: true
+          });
+        }
+      });
 
       const hrEmployeeIds = (emps || []).filter(e => e.role === 'hr').map(e => e.id);
-      const filteredAssignments = (currentAssignments || []).filter(a => !hrEmployeeIds.includes(a.employee_fk));
+      const filteredAssignments = Object.values(groupedAssignments).filter(a => !hrEmployeeIds.includes(a.employee_fk || ''));
 
       setAllJobsites(sites || []);
       setJobsiteGroups(groups || []);

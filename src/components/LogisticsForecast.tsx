@@ -56,22 +56,10 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
       const startStr = format(startWeek, 'yyyy-MM-dd');
       const endStr = format(addWeeks(startWeek, 8), 'yyyy-MM-dd');
       
-      const { data: weeksRes } = await supabase.from('assignment_weeks')
-          .select('*, items:assignment_items(*)')
+      const { data: scheduleData } = await supabase.from('v_current_schedule')
+          .select('*')
           .gte('week_start', startStr)
           .lt('week_start', endStr);
-
-      const assignmentsMap = new Map<string, any>();
-      weeksRes?.forEach(row => {
-        const key = `${row.employee_fk}-${row.week_start}`;
-        if (!assignmentsMap.has(key)) {
-          assignmentsMap.set(key, { ...row, items: [...(row.items || [])] });
-        } else {
-          const existing = assignmentsMap.get(key);
-          existing.items = [...existing.items, ...(row.items || [])];
-        }
-      });
-      const mergedWeeks = Array.from(assignmentsMap.values());
 
       const combined: AssignmentData[] = [];
       const seen = new Set<string>();
@@ -80,16 +68,7 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
         const status = row.status?.toLowerCase().trim();
         if (status === 'rotation' || status === 'vacation') return;
 
-        const jobsiteNames = parseAssignmentNames(row.assignment_name);
-        
-        if (row.items) {
-          row.items.forEach((item: any) => {
-            const jobsite = jobsites.find(j => j.id === item.jobsite_fk);
-            if (jobsite) {
-              jobsiteNames.push(jobsite.jobsite_name);
-            }
-          });
-        }
+        const jobsiteNames = row.jobsite_name ? [row.jobsite_name] : parseAssignmentNames(row.assignment_name);
 
         jobsiteNames.forEach(name => {
           if (['vacation', 'rotation'].includes(name.toLowerCase().trim())) return;
@@ -106,7 +85,7 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
         });
       };
 
-      mergedWeeks.forEach(processRow);
+      scheduleData?.forEach(processRow);
 
       setAssignments(combined);
     } catch (err) {

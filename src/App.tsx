@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import AdminPortal from './components/AdminPortal';
 import EmployeePortal from './components/EmployeePortal';
@@ -7,189 +7,75 @@ import SiteManagerPortal from './components/SiteManagerPortal';
 import SiteLeadPortal from './components/SiteLeadPortal';
 import HRPortal from './components/HRPortal';
 import StandaloneMap from './components/StandaloneMap';
-import MobileSplashScreen from './components/MobileSplashScreen';
 import { RefreshCw, User } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { NotificationProvider } from './components/NotificationToast';
-import { BiometricAuth } from './components/BiometricAuth';
-import { Haptics, ImpactStyle } from '@capacitor/haptics';
-import { StatusBar, Style } from '@capacitor/status-bar';
-import { Capacitor } from '@capacitor/core';
 
 export default function App() {
-  const { user, isAdmin, isSiteManager, isSiteLead, isHR, loading, isLoggingIn, handleLogin } = useAuth();
-  const [showSplash, setShowSplash] = useState(true);
-  const [isBiometricOpen, setIsBiometricOpen] = useState(false);
+  const { user, isAdmin, isSiteManager, isSiteLead, isHR, loading, handleLogin } = useAuth();
 
-  useEffect(() => {
-    // Configure Status Bar for Native
-    if (Capacitor.isNativePlatform()) {
-      StatusBar.setStyle({ style: Style.Dark });
-      StatusBar.setBackgroundColor({ color: '#050A08' });
-    }
-
-    console.log('App: Loading state changed:', loading);
-    if (!loading) {
-      const timer = setTimeout(() => {
-        console.log('App: Hiding splash screen');
-        setShowSplash(false);
-      }, 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [loading]);
-
-  const onLoginClick = async () => {
-    await Haptics.impact({ style: ImpactStyle.Medium });
-    setIsBiometricOpen(true);
-  };
-
-  const handleBiometricSuccess = () => {
-    setIsBiometricOpen(false);
-    handleLogin();
-  };
-
-  if (showSplash) {
-    return <MobileSplashScreen />;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#050A08] flex flex-col items-center justify-center gap-4">
+        <RefreshCw className="text-emerald-500 animate-spin" size={32} />
+        <p className="text-gray-500 text-sm font-mono">Initializing Application...</p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-4 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-bold text-gray-500 hover:text-white transition-all"
+        >
+          Refresh Page
+        </button>
+      </div>
+    );
   }
 
   return (
     <ErrorBoundary>
-      <NotificationProvider>
-        <Routes>
-          <Route path="/map" element={<StandaloneMap />} />
-
-        <Route
-          path="/login"
-          element={
-            !user ? (
-              <div className="min-h-screen bg-[#050A08] flex items-center justify-center p-6 pt-safe pb-safe">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="max-w-md w-full bg-[#0A120F] border border-emerald-900/30 p-8 rounded-3xl shadow-2xl text-center"
-                >
-                  <div className="flex items-center justify-center gap-3 mb-6">
-                    <img src="/logo.png" alt="Greenergy Logo" className="h-16 object-contain" referrerPolicy="no-referrer" />
-                    <div className="flex flex-col items-start justify-center text-left">
-                      <span className="text-white font-bold text-2xl leading-none tracking-tight">GreEnergy</span>
-                      <span className="text-emerald-500 font-bold text-[0.65rem] uppercase tracking-[0.2em] mt-1">RESOURCES</span>
-                    </div>
-                  </div>
-                  <h1 className="text-3xl font-bold text-white mb-2">Portal Access</h1>
-                  <p className="text-gray-400 mb-8">Sign in to access your dashboard and company resources.</p>
-                  <button
-                    onClick={onLoginClick}
-                    disabled={isLoggingIn}
-                    className={`w-full py-4 ${isLoggingIn ? 'bg-emerald-900/50 text-emerald-500' : 'bg-emerald-500 hover:bg-emerald-400 text-black'} font-bold rounded-2xl transition-all active-scale flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20`}
-                  >
-                    {isLoggingIn ? (
-                      <>
-                        <RefreshCw size={20} className="animate-spin" />
-                        Logging in...
-                      </>
-                    ) : (
-                      <>
-                        <User size={20} />
-                        Sign In with Company Account
-                      </>
-                    )}
-                  </button>
-                  <p className="mt-6 text-xs text-gray-500">
-                    Authorized access only. All activities are monitored.
-                  </p>
-                  <div className="mt-8 text-center border-t border-white/10 pt-4">
-                    <p className="text-emerald-500 font-mono text-[12px] uppercase tracking-[0.3em] font-bold">
-                      ⚡️ Build v11.0 ⚡️
-                    </p>
-                  </div>
-                </motion.div>
-              </div>
-            ) : (
-              <Navigate to="/" replace />
-            )
-          }
-        />
+      <Routes>
+        <Route path="/map" element={<StandaloneMap />} />
 
         <Route
           path="/admin/*"
-          element={
-            user ? (
-              isAdmin ? <AdminPortal /> : <Navigate to="/portal" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
+          element={isAdmin ? <AdminPortal /> : <Navigate to="/portal" replace />}
         />
 
         <Route
           path="/hr/*"
-          element={
-            user ? (
-              (isAdmin || isHR) ? <HRPortal /> : <Navigate to="/portal" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
+          element={(isAdmin || isHR) ? <HRPortal /> : <Navigate to="/portal" replace />}
         />
 
         <Route
           path="/site-manager/*"
-          element={
-            user ? (
-              (isAdmin || isSiteManager) ? <SiteManagerPortal /> : <Navigate to="/portal" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
+          element={(isAdmin || isSiteManager) ? <SiteManagerPortal /> : <Navigate to="/portal" replace />}
         />
 
         <Route
           path="/site-lead/*"
-          element={
-            user ? (
-              (isAdmin || isSiteLead) ? <SiteLeadPortal /> : <Navigate to="/portal" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
+          element={(isAdmin || isSiteLead) ? <SiteLeadPortal /> : <Navigate to="/portal" replace />}
         />
 
         <Route
           path="/portal/*"
-          element={
-            user ? <EmployeePortal /> : <Navigate to="/login" replace />
-          }
+          element={<EmployeePortal />}
         />
 
         <Route
           path="/"
           element={
-            user ? (
-              isAdmin
-                ? <Navigate to="/admin" replace />
-                : isHR
-                ? <Navigate to="/hr" replace />
-                : isSiteManager
-                ? <Navigate to="/site-manager" replace />
-                : isSiteLead
-                ? <Navigate to="/site-lead" replace />
-                : <Navigate to="/portal" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
+            isAdmin
+              ? <Navigate to="/admin" replace />
+              : isHR
+              ? <Navigate to="/hr" replace />
+              : isSiteManager
+              ? <Navigate to="/site-manager" replace />
+              : isSiteLead
+              ? <Navigate to="/site-lead" replace />
+              : <Navigate to="/portal" replace />
           }
         />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <BiometricAuth 
-        isOpen={isBiometricOpen} 
-        onSuccess={handleBiometricSuccess} 
-        onCancel={() => setIsBiometricOpen(false)} 
-        type="face"
-      />
-      </NotificationProvider>
     </ErrorBoundary>
   );
 }

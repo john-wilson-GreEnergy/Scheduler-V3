@@ -62,8 +62,8 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       
       // 1. Get current user's jobsite for this week
       const { data: userAssignments, error: assignError } = await supabase
-        .from('assignment_weeks')
-        .select('id, week_start, assignment_name')
+        .from('v_current_schedule')
+        .select('week_start, assignment_name, jobsite_name')
         .eq('employee_fk', userId) // Use userId (UUID) instead of email
         .lte('week_start', todayStr)
         .order('week_start', { ascending: false })
@@ -79,7 +79,7 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
         return;
       }
       
-      assignmentNames = parseAssignmentNames(userAssignments[0].assignment_name);
+      assignmentNames = userAssignments[0].jobsite_name ? [userAssignments[0].jobsite_name] : parseAssignmentNames(userAssignments[0].assignment_name);
       weekStart = userAssignments[0].week_start;
     }
     
@@ -132,7 +132,7 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
     }
 
     const { data: targetAssignments, error: targetAssignError } = await supabase
-      .from('assignment_weeks')
+      .from('v_current_schedule')
       .select('*')
       .eq('week_start', weekStart)
       .in('employee_fk', targets.map(t => t.id));
@@ -160,7 +160,7 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       const empAssignments = targetAssignments.filter(ta => ta.employee_fk === emp.id);
       
       // Parse assignment names for this employee
-      const empAssignmentNames = empAssignments.flatMap(aw => parseAssignmentNames(aw.assignment_type || ''));
+      const empAssignmentNames = empAssignments.flatMap(row => row.jobsite_name ? [row.jobsite_name] : parseAssignmentNames(row.assignment_name || ''));
       
       // Check if any of these assignment names match the current user's assignment names
       const isMatch = empAssignmentNames.some(empName => 

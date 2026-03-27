@@ -27,8 +27,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabase';
 import { logActivity } from '../lib/logger';
 import { format, parseISO, startOfWeek } from 'date-fns';
+import { syncEmployeeAssignmentsBackend } from '../lib/supabase_functions';
 import { sendNotification } from '../utils/notifications';
-import { generateAssignmentWeeksForEmployee } from '../utils/assignmentGenerator';
 
 interface EmployeeManagementProps {
   employees: Employee[];
@@ -143,6 +143,9 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
         .update({ rotation_group: null })
         .eq('id', editingRotation.id);
 
+      // Use backend to sync assignments based on new rotation config
+      await syncEmployeeAssignmentsBackend(editingRotation.id);
+
       logActivity('rotation_update', {
         employee_id: editingRotation.id,
         name: `${editingRotation.first_name} ${editingRotation.last_name}`,
@@ -193,9 +196,9 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
         console.log('Update error:', error);
         if (error) throw error;
         
-        // Reactivate: generate weeks from reactivation date if employee was inactive
+        // Reactivate: sync assignments from backend
         if (!editingEmployee.is_active) {
-            await generateAssignmentWeeksForEmployee(editingEmployee, 104, parseISO(rotationForm.anchor_date));
+            await syncEmployeeAssignmentsBackend(editingEmployee.id, rotationForm.anchor_date);
         }
         
         logActivity('employee_update', { id: editingEmployee.id, ...payload });
@@ -206,7 +209,10 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
           .select();
         if (error) throw error;
         const newEmployee = data[0];
-        await generateAssignmentWeeksForEmployee(newEmployee);
+        
+        // Use backend to generate initial assignments
+        await syncEmployeeAssignmentsBackend(newEmployee.id);
+        
         logActivity('employee_create', payload);
       }
 

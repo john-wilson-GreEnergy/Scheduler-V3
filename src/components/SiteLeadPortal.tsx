@@ -66,6 +66,7 @@ export default function SiteLeadPortal() {
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [currentAssignment, setCurrentAssignment] = useState<AssignmentWeek | null>(null);
   const [upcomingAssignments, setUpcomingAssignments] = useState<AssignmentWeek[]>([]);
+  const [requiredActions, setRequiredActions] = useState<PortalAction[]>([]);
   const [timelineIndex, setTimelineIndex] = useState(0);
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationConfig>>({});
 
@@ -107,6 +108,12 @@ export default function SiteLeadPortal() {
         .eq('active', true)
         .order('sort_order', { ascending: true });
 
+      const { data: reqActions } = await supabase
+        .from('portal_required_actions')
+        .select('*')
+        .eq('active', true)
+        .order('sort_order', { ascending: true });
+
       const todayStr = format(new Date(), 'yyyy-MM-dd');
       const { data: announcements } = await supabase
         .from('announcements')
@@ -124,6 +131,7 @@ export default function SiteLeadPortal() {
       setAllJobsites(allSites || []);
       setJobsiteGroups(groups || []);
       setPortalActions(portalActions || []);
+      setRequiredActions(reqActions || []);
       setAnnouncements(announcements || []);
       setRecentActivity(recentActivity || []);
 
@@ -289,12 +297,25 @@ export default function SiteLeadPortal() {
           setRequests(reqData || []);
 
           // Fetch action completions for site employees
-          const { data: compData } = await supabase
-            .from('portal_action_completions')
-            .select('*, action:portal_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
-            .in('employee_id', empIds)
-            .order('completed_at', { ascending: false });
-          setCompletions(compData || []);
+          const [compData, reqCompData] = await Promise.all([
+            supabase
+              .from('portal_action_completions')
+              .select('*, action:portal_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
+              .in('employee_id', empIds)
+              .order('completed_at', { ascending: false }),
+            supabase
+              .from('portal_required_action_completions')
+              .select('*, action:portal_required_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
+              .in('employee_id', empIds)
+              .order('completed_at', { ascending: false })
+          ]);
+
+          const allCompletions = [
+            ...(compData.data || []),
+            ...(reqCompData.data || [])
+          ].sort((a, b) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime());
+
+          setCompletions(allCompletions);
         }
       }
     } catch (err) {
@@ -516,26 +537,58 @@ export default function SiteLeadPortal() {
           </motion.div>
         )}
         {activeTab === 'actions' && (
-          <motion.div key="actions" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {portalActions.map(action => (
-              <button
-                key={action.id}
-                onClick={() => {
-                  if (action.embed_in_portal) {
-                    setEmbeddedFormAction(action);
-                  } else {
-                    window.open(resolveUrl(action.url), action.open_in_new_tab ? "_blank" : "_self");
-                  }
-                }}
-                className="bg-[#0A120F] border border-white/5 rounded-2xl p-6 text-left hover:border-emerald-500/30 transition-all group"
-              >
-                <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500 mb-4 group-hover:bg-emerald-500 group-hover:text-black transition-all">
-                  <IconComponent name={action.icon} className="w-5 h-5" />
+          <motion.div key="actions" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-8">
+            {requiredActions.length > 0 && (
+              <div>
+                <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest mb-4">Required Actions</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {requiredActions.map(action => (
+                    <button
+                      key={action.id}
+                      onClick={() => {
+                        if (action.embed_in_portal) {
+                          setEmbeddedFormAction(action);
+                        } else {
+                          window.open(resolveUrl(action.url), action.open_in_new_tab ? "_blank" : "_self");
+                        }
+                      }}
+                      className="bg-[#0A120F] border border-emerald-500/20 rounded-2xl p-6 text-left hover:border-emerald-500/50 transition-all group"
+                    >
+                      <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500 mb-4 group-hover:bg-emerald-500 group-hover:text-black transition-all">
+                        <IconComponent name={action.icon} className="w-5 h-5" />
+                      </div>
+                      <h3 className="font-bold text-white mb-1">{action.title}</h3>
+                      <p className="text-xs text-gray-500">{action.description}</p>
+                    </button>
+                  ))}
                 </div>
-                <h3 className="font-bold text-white mb-1">{action.title}</h3>
-                <p className="text-xs text-gray-500">{action.description}</p>
-              </button>
-            ))}
+              </div>
+            )}
+
+            <div>
+              <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest mb-4">GreEnergy Links</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {portalActions.map(action => (
+                  <button
+                    key={action.id}
+                    onClick={() => {
+                      if (action.embed_in_portal) {
+                        setEmbeddedFormAction(action);
+                      } else {
+                        window.open(resolveUrl(action.url), action.open_in_new_tab ? "_blank" : "_self");
+                      }
+                    }}
+                    className="bg-[#0A120F] border border-white/5 rounded-2xl p-6 text-left hover:border-emerald-500/30 transition-all group"
+                  >
+                    <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-500 mb-4 group-hover:bg-emerald-500 group-hover:text-black transition-all">
+                      <IconComponent name={action.icon} className="w-5 h-5" />
+                    </div>
+                    <h3 className="font-bold text-white mb-1">{action.title}</h3>
+                    <p className="text-xs text-gray-500">{action.description}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
           </motion.div>
         )}
 

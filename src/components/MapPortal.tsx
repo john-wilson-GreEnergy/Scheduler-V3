@@ -10,6 +10,7 @@ import { format, startOfWeek, eachWeekOfInterval, endOfYear, addWeeks } from 'da
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { isRotationWeek } from '../utils/rotation';
 import { RotationConfig } from '../types';
+import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 
 // Map Controller for programmatic zooming/centering
 function MapController({ target }: { target: { center?: [number, number], bounds?: L.LatLngBoundsExpression } | null }) {
@@ -92,12 +93,9 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
     const weekStr = selectedWeek;
     const weekStartObj = new Date(selectedWeek + 'T00:00:00');
 
-    // Fetch current assignments from assignment_weeks table
+    // Fetch current assignments from backend view
     const queries: any[] = [
-      supabase
-        .from('assignment_weeks')
-        .select('*, items:assignment_items(*)')
-        .eq('week_start', weekStr)
+      fetchCurrentScheduleBackend(weekStr)
     ];
 
     if (fieldEmployees.length === 0 && !providedEmployees) {
@@ -117,16 +115,15 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
     );
 
     const results = await Promise.all(queries);
-    const weeksRes = results[0];
+    const scheduleData = results[0];
     const employeesRes = { data: fieldEmployees, error: null };
-    const rotRes = results[1];
+    const rotRes = results[results.length - 1];
 
-    if (weeksRes.error || employeesRes.error) {
-      console.error('Error fetching staffing data:', weeksRes.error || employeesRes.error);
+    if (!scheduleData || employeesRes.error) {
+      console.error('Error fetching staffing data:', employeesRes.error);
       return;
     }
 
-    const weeks = weeksRes.data || [];
     const allEmployees = employeesRes.data || [];
     const rotationConfigsMap: Record<string, RotationConfig> = {};
     if (rotRes.data) {
@@ -137,7 +134,6 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
     if (allEmployees.length > 0) {
       const staffingMap: Record<string, SiteStaffing> = {};
       const offSiteMap: Record<string, OffSitePersonnel> = {};
-      const weekStartObj = new Date(selectedWeek + 'T00:00:00');
       
       const roleRanks: Record<string, number> = {
         'site manager': 1,
@@ -195,27 +191,23 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
         });
       };
 
-      const processWeek = (week: any) => {
+      const processRow = (row: any) => {
         // Match employee by email or ID ref (robust matching)
         const employee = allEmployees.find(e => 
-          (week.email && e.email.toLowerCase() === week.email.toLowerCase()) ||
-          (week.employee_id && e.employee_id_ref === week.employee_id) ||
-          (week.employee_fk && e.id === week.employee_fk)
+          (row.email && e.email.toLowerCase() === row.email.toLowerCase()) ||
+          (row.employee_id && e.employee_id_ref === row.employee_id) ||
+          (row.employee_fk && e.id === row.employee_fk)
         );
 
         if (!employee) return;
 
-        // 1. Check for explicit items (new system)
-        if (week.items && week.items.length > 0) {
-          week.items.forEach((item: any) => {
-            if (item.jobsite_fk) {
-              addToSite(item.jobsite_fk, employee);
-            }
-          });
+        // 1. Check for explicit jobsite assignment (from view)
+        if (row.jobsite_id) {
+          addToSite(row.jobsite_id, employee);
         } 
-        // 2. Fallback to assignment_name matching (legacy/fallback system)
-        else if (week.assignment_name) {
-          const assignmentNames = parseAssignmentNames(week.assignment_name);
+        // 2. Fallback to assignment_name matching
+        else if (row.assignment_name) {
+          const assignmentNames = parseAssignmentNames(row.assignment_name);
           
           assignmentNames.forEach(name => {
             const trimmedName = name.trim().toLowerCase();
@@ -256,7 +248,7 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
         }
       };
 
-      weeks.forEach(processWeek);
+      scheduleData.forEach(processRow);
 
       // Sort by seniority and calculate staffing levels
       Object.keys(staffingMap).forEach(siteId => {
