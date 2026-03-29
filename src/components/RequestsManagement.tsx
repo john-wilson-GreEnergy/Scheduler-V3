@@ -125,6 +125,7 @@ export default function RequestsManagement({ canApprove = true }: { canApprove?:
       // Log the action
       logActivity(action === 'approved' ? 'request_approved' : 'request_denied', {
         request_id: request.id,
+        employee_fk: request.employee_fk,
         employee: `${request.employee?.first_name} ${request.employee?.last_name}`,
         type: request.request_type,
         dates: `${request.start_date} to ${request.end_date}`

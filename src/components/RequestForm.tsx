@@ -20,7 +20,7 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
       const { data, error } = await supabase
         .from('assignment_weeks')
         .select('*')
-        .eq('employee_id', employee.employee_id_ref)
+        .eq('employee_fk', employee.id)
         .order('week_start', { ascending: true });
       
       if (error) {
@@ -82,7 +82,7 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
         // Next available work week (jobsite assigned that isn't Vacation, Rotation, or Personal)
         return assignments.filter(a => {
           const weekDate = new Date(a.week_start + 'T12:00:00');
-          return weekDate >= currentWeekStart && !['Vacation', 'Rotation', 'Personal'].includes(a.assignment_name || '');
+          return weekDate >= currentWeekStart && !['Vacation', 'Rotation', 'Personal'].includes(a.assignment_type || '');
         });
       default:
         return assignments;
@@ -151,7 +151,7 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
           >
             <option value="">Select a week</option>
             {getAvailableWeeks().map(a => (
-              <option key={a.id} value={a.week_start}>{format(new Date(a.week_start), 'yyyy-MM-dd')} - {a.assignment_name}</option>
+              <option key={a.id} value={a.week_start}>{format(new Date(a.week_start), 'yyyy-MM-dd')} - {a.assignment_type}</option>
             ))}
           </select>
         </div>

@@ -242,18 +242,21 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
 
       scheduleData.forEach((row: any) => {
         // Skip inactive employees (view already filters, but being safe)
-        if (!row.employee_id) return;
+        if (!row.employee_fk) return;
 
-        const key = `${row.employee_id}-${row.week_start}-${row.jobsite_id || row.week_assignment_name}`;
+        // Robustly determine assignment type if missing
+        const effectiveAssignmentType = row.assignment_type || row.jobsite_name || 'Unassigned';
+
+        const key = `${row.employee_fk}-${row.week_start}-${row.jobsite_id || effectiveAssignmentType}`;
         if (seen.has(key)) return;
 
         mapped.push({
-          employeeId: row.employee_id,
-          jobsiteId: row.jobsite_id || row.week_assignment_name?.toLowerCase(),
+          employeeId: row.employee_fk,
+          jobsiteId: row.jobsite_id || effectiveAssignmentType.toLowerCase(),
           weekStart: row.week_start,
-          isRotation: row.value_type === 'rotation',
+          isRotation: row.value_type === 'rotation' || effectiveAssignmentType.toLowerCase() === 'rotation',
           days: row.days,
-          status: row.week_status || 'assigned'
+          status: row.status || 'assigned'
         });
         seen.add(key);
       });
@@ -291,6 +294,15 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
       try {
         await assignEmployeeToJobsiteBackend(employeeId, actualJobsiteId, weekStr, user.id);
         console.log('Backend assignment success');
+        
+        // Log the activity
+        await logActivity('assignment_update', {
+          employee_fk: employeeId,
+          jobsite_fk: actualJobsiteId,
+          week_start: weekStr,
+          jobsite_name: targetDisplaySite.jobsite_name,
+          previous_jobsite: previousJobsiteName
+        });
       } catch (err) {
         console.error('Error saving assignment via backend:', err);
         setAssignments(previousAssignments); // Revert local state
@@ -345,10 +357,9 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
       // 2. Prepare new assignments, respecting rotation logic
       const newAssignments = [];
       for (const row of prevData) {
-        // Match by email or employee_id
+        // Match by employee_fk (UUID)
         const employee = employees.find(e => 
-          (row.email && e.email.toLowerCase() === row.email.toLowerCase()) ||
-          (row.employee_id && e.employee_id_ref === row.employee_id)
+          (row.employee_fk && e.id === row.employee_fk)
         );
         
         if (!employee || !employee.is_active) continue;
@@ -358,14 +369,10 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
         const onRotation = config ? isRotationWeek(currentWeek, config) : false;
 
         newAssignments.push({
-          employee_id: employee.employee_id_ref,
-          email: employee.email,
-          first_name: employee.first_name,
-          last_name: employee.last_name,
+          employee_fk: employee.id,
           week_start: currentWeekStr,
-          assignment_name: onRotation ? 'Rotation' : row.assignment_name,
-          status: onRotation ? 'rotation' : (row.status || 'unassigned'),
-          value_type: 'jobsite'
+          assignment_type: onRotation ? 'Rotation' : row.assignment_type,
+          status: onRotation ? 'rotation' : (row.status || 'unassigned')
         });
       }
 
@@ -374,7 +381,7 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
         const { data: existing, error: fetchError } = await supabase
           .from('assignment_weeks')
           .select('id')
-          .eq('employee_id', assignment.employee_id)
+          .eq('employee_fk', assignment.employee_fk)
           .eq('week_start', assignment.week_start)
           .maybeSingle();
         
@@ -396,7 +403,7 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
             .delete()
             .eq('assignment_week_fk', assignmentWeekId);
             
-          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_name);
+          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_type);
           if (jobsite) {
             await supabase
               .from('assignment_items')
@@ -417,7 +424,7 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
           const assignmentWeekId = data.id;
           
           // Insert assignment_items
-          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_name);
+          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_type);
           if (jobsite) {
             await supabase
               .from('assignment_items')

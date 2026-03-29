@@ -109,16 +109,19 @@ export default function PortalContentManager() {
   const handleSaveAction = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const priority = formData.get('priority') as 'high' | 'low' || (activeTab === 'actions' ? 'high' : 'low');
+    const priorityValue = formData.get('priority') as string;
+    const priority = (priorityValue === 'high' || priorityValue === 'low') 
+      ? priorityValue 
+      : (activeTab === 'actions' ? 'high' : 'low');
+    
     const table = priority === 'high' ? 'portal_required_actions' : 'portal_actions';
 
-    const data = {
+    const data: any = {
       title: formData.get('title') as string,
       description: formData.get('description') as string,
       url: formData.get('url') as string,
       icon: formData.get('icon') as string,
       category: formData.get('category') as string,
-      priority: priority,
       active: formData.get('active') === 'on',
       start_date: formData.get('start_date') as string || null,
       end_date: formData.get('end_date') as string || null,
@@ -126,22 +129,30 @@ export default function PortalContentManager() {
       open_in_new_tab: formData.get('open_in_new_tab') === 'on',
       recurrence_type: formData.get('recurrence_type') as string || 'none',
       recurrence_interval: parseInt(formData.get('recurrence_interval') as string) || 1,
-      recurrence_day: parseInt(formData.get('recurrence_day') as string) || 1,
-      duration_days: parseInt(formData.get('duration_days') as string) || 7,
+      recurrence_day: formData.get('recurrence_day') !== null ? parseInt(formData.get('recurrence_day') as string) : 1,
+      duration_days: formData.get('duration_days') !== null ? parseInt(formData.get('duration_days') as string) : 7,
       automated: formData.get('automated') === 'on',
       embed_in_portal: formData.get('embed_in_portal') === 'on'
     };
+
+    if (table === 'portal_actions') {
+      data.priority = priority;
+    }
 
     try {
       if (editingItem) {
         // If priority changed, we might need to move between tables, but for simplicity we'll just update the current table
         // or handle the move if priority changed.
-        const originalTable = editingItem.priority === 'high' ? 'portal_required_actions' : 'portal_actions';
+        const originalTable = (editingItem.type === 'required_action' || editingItem.priority === 'high') ? 'portal_required_actions' : 'portal_actions';
         
         if (originalTable !== table) {
-          // Move between tables
-          await supabase.from(originalTable).delete().eq('id', editingItem.id);
-          await supabase.from(table).insert(data);
+          // Move between tables: Insert into new table first, then delete from old
+          const { error: insertError } = await supabase.from(table).insert(data);
+          if (!insertError) {
+            await supabase.from(originalTable).delete().eq('id', editingItem.id);
+          } else {
+            throw insertError;
+          }
         } else {
           await supabase.from(table).update(data).eq('id', editingItem.id);
         }
@@ -213,8 +224,10 @@ export default function PortalContentManager() {
   const displayItems = activeTab === 'all' 
     ? allItems 
     : (activeTab === 'announcements' 
-        ? filteredAnnouncements 
-        : (activeTab === 'actions' ? filteredRequiredActions : filteredActions));
+        ? filteredAnnouncements.map(a => ({ ...a, type: 'announcement' }))
+        : (activeTab === 'actions' 
+            ? filteredRequiredActions.map(a => ({ ...a, type: 'required_action' })) 
+            : filteredActions.map(a => ({ ...a, type: 'action' }))));
 
   return (
     <div className="space-y-8 p-8 max-w-7xl mx-auto">

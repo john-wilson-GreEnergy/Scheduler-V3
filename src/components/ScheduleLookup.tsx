@@ -204,10 +204,10 @@ export default function ScheduleLookup() {
                         )}
                       </div>
 
-                      {a.assignment_name && (
+                      {a.assignment_type && (
                         <div className="mt-4 pt-4 border-t border-white/5">
-                          <p className="text-[10px] text-gray-600 uppercase font-bold mb-1">Legacy Reference</p>
-                          <p className="text-xs text-gray-400 truncate">{a.assignment_name}</p>
+                          <p className="text-[10px] text-gray-600 uppercase font-bold mb-1">Assignment Type</p>
+                          <p className="text-xs text-gray-400 truncate">{a.assignment_type}</p>
                         </div>
                       )}
                     </div>

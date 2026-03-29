@@ -189,7 +189,7 @@ async function runSync() {
         await supabase.from('chat_space_memberships').insert({
           space_id: spaceId,
           group_name: groupName,
-          employee_id: emp.id,
+          employee_fk: emp.id,
           email,
           added_at: new Date().toISOString()
         });

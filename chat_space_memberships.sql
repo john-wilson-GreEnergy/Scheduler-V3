@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS chat_space_memberships (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   space_id        TEXT NOT NULL,           -- Google Chat space ID e.g. "spaces/XXXXXXXXX"
   group_name      TEXT NOT NULL,           -- Human readable e.g. "Solar Star"
-  employee_id     UUID REFERENCES employees(id) ON DELETE CASCADE,
+  employee_fk     UUID REFERENCES employees(id) ON DELETE CASCADE,
   email           TEXT NOT NULL,
   membership_name TEXT,                    -- Google Chat membership resource name (for DELETE calls)
                                            -- e.g. "spaces/XXXXXXXXX/members/YYYYYYYYY"

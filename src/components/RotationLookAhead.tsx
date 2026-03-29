@@ -192,13 +192,10 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
 
     const { data: weekData, error: weekError } = await supabase.from('assignment_weeks').insert({
       employee_fk: emp.id,
-      email: emp.email,
       week_start: weekStart,
-      assignment_name: null,
+      assignment_type: null,
       status: 'rotation',
-      value_type: 'rotation',
-      first_name: emp.first_name,
-      last_name: emp.last_name
+      value_type: 'rotation'
     }).select().single();
 
     if (weekError) {
@@ -238,7 +235,7 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
     if (!assignment) return;
 
     const { error } = await supabase.from('assignment_weeks').update({ 
-      assignment_name: null,
+      assignment_type: null,
       status: 'rotation',
       value_type: 'rotation'
     }).eq('id', assignmentId);
@@ -299,7 +296,7 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
     const { data, error } = await supabase.from('assignment_weeks').update({
         status: 'rotation',
         value_type: 'rotation',
-        assignment_name: null
+        assignment_type: null
     }).eq('id', first.id).select().single();
 
     if (error) {

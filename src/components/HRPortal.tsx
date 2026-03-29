@@ -62,7 +62,7 @@ export default function HRPortal() {
             week_start: row.week_start,
             employee_fk: row.employee_fk,
             status: row.status,
-            assignment_name: row.assignment_name,
+            assignment_type: row.assignment_type || row.jobsite_name,
             assignment_items: []
           };
         }
@@ -117,8 +117,8 @@ export default function HRPortal() {
       if (!employeeId) return;
 
       const hasRotationItem = a.assignment_items?.some(i => i.jobsite_fk === rotationJobsiteId);
-      const isRotation = a.status?.toLowerCase() === 'rotation' || a.assignment_name?.toLowerCase() === 'rotation' || hasRotationItem;
-      const isVacation = a.status?.toLowerCase() === 'vacation' || a.assignment_name?.toLowerCase() === 'vacation';
+      const isRotation = a.status?.toLowerCase() === 'rotation' || a.assignment_type?.toLowerCase() === 'rotation' || hasRotationItem;
+      const isVacation = a.status?.toLowerCase() === 'vacation' || a.assignment_type?.toLowerCase() === 'vacation';
       const isTraining = a.status?.toLowerCase() === 'training';
 
       if (isRotation) {
@@ -393,12 +393,12 @@ export default function HRPortal() {
                         
                         let displayAssignment = [...new Set(itemSiteNames)].join(', ');
                         if (!displayAssignment) {
-                          displayAssignment = assignment?.assignment_name || 'Unassigned';
+                          displayAssignment = assignment?.assignment_type || 'Unassigned';
                         }
 
                         const status = assignment?.status?.toLowerCase() || 'unassigned';
-                        const isRotation = status === 'rotation' || assignment?.assignment_name?.toLowerCase() === 'rotation';
-                        const isVacation = status === 'vacation' || assignment?.assignment_name?.toLowerCase() === 'vacation';
+                        const isRotation = status === 'rotation' || assignment?.assignment_type?.toLowerCase() === 'rotation';
+                        const isVacation = status === 'vacation' || assignment?.assignment_type?.toLowerCase() === 'vacation';
 
                         return (
                           <tr key={emp.id} className="hover:bg-white/[0.02] transition-colors group">

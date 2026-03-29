@@ -171,13 +171,13 @@ export default function SiteLeadPortal() {
         const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
         const { data: currentAssignment } = await supabase
           .from('assignment_weeks')
-          .select('assignment_name')
-          .eq('email', employee.email)
+          .select('assignment_type')
+          .eq('employee_fk', employee.id)
           .eq('week_start', weekStart)
           .maybeSingle();
 
-        if (currentAssignment?.assignment_name) {
-          const assignmentNames = parseAssignmentNames(currentAssignment.assignment_name);
+        if (currentAssignment?.assignment_type) {
+          const assignmentNames = parseAssignmentNames(currentAssignment.assignment_type);
           assignmentSite = (allSites || []).find(
             s => assignmentNames.includes(s.jobsite_group || '') ||
                  assignmentNames.includes(s.jobsite_name || '')
@@ -201,7 +201,7 @@ export default function SiteLeadPortal() {
       if (siteToUse) {
         const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
 
-        // Build list of names to match against assignment_name:
+        // Build list of names to match against assignment_type:
         // includes the site itself, its group, and any site in the same group
         const siteGroup = siteToUse.jobsite_group;
         const groupSites = siteGroup
@@ -301,12 +301,12 @@ export default function SiteLeadPortal() {
             supabase
               .from('portal_action_completions')
               .select('*, action:portal_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
-              .in('employee_id', empIds)
+              .in('employee_fk', empIds)
               .order('completed_at', { ascending: false }),
             supabase
               .from('portal_required_action_completions')
               .select('*, action:portal_required_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
-              .in('employee_id', empIds)
+              .in('employee_fk', empIds)
               .order('completed_at', { ascending: false })
           ]);
 

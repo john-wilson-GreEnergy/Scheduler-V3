@@ -79,7 +79,7 @@ export default function ActivityFeed({
         if (employeeIds.length > 0) {
           conditions.push(`actor_fk.in.(${employeeIds.join(',')})`);
           // 2. Actions about site employees (e.g. request approval)
-          conditions.push(`details->>employee_id.in.(${employeeIds.join(',')})`);
+          conditions.push(`details->>employee_fk.in.(${employeeIds.join(',')})`);
         }
         
         // 3. Actions explicitly mentioning the site/group
@@ -87,7 +87,7 @@ export default function ActivityFeed({
           siteNames.forEach(name => {
             const escapedName = name.replace(/'/g, "''");
             conditions.push(`details->>jobsite_name.ilike.%${escapedName}%`);
-            conditions.push(`details->>assignment_name.ilike.%${escapedName}%`);
+            conditions.push(`details->>assignment_type.ilike.%${escapedName}%`);
           });
         }
 

@@ -63,7 +63,7 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       // 1. Get current user's jobsite for this week
       const { data: userAssignments, error: assignError } = await supabase
         .from('v_current_schedule')
-        .select('week_start, assignment_name, jobsite_name')
+        .select('week_start, assignment_type, jobsite_name')
         .eq('employee_fk', userId) // Use userId (UUID) instead of email
         .lte('week_start', todayStr)
         .order('week_start', { ascending: false })
@@ -79,7 +79,7 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
         return;
       }
       
-      assignmentNames = userAssignments[0].jobsite_name ? [userAssignments[0].jobsite_name] : parseAssignmentNames(userAssignments[0].assignment_name);
+      assignmentNames = userAssignments[0].jobsite_name ? [userAssignments[0].jobsite_name] : parseAssignmentNames(userAssignments[0].assignment_type);
       weekStart = userAssignments[0].week_start;
     }
     
@@ -160,7 +160,7 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       const empAssignments = targetAssignments.filter(ta => ta.employee_fk === emp.id);
       
       // Parse assignment names for this employee
-      const empAssignmentNames = empAssignments.flatMap(row => row.jobsite_name ? [row.jobsite_name] : parseAssignmentNames(row.assignment_name || ''));
+      const empAssignmentNames = empAssignments.flatMap(row => row.jobsite_name ? [row.jobsite_name] : parseAssignmentNames(row.assignment_type || ''));
       
       // Check if any of these assignment names match the current user's assignment names
       const isMatch = empAssignmentNames.some(empName => 

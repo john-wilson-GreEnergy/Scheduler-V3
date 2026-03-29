@@ -76,8 +76,7 @@ interface ManpowerViewProps {
 }
 
 interface AssignmentData {
-  employee_id: string;
-  employee_fk?: string;
+  employee_fk: string;
   email?: string;
   jobsite_names: string[];
   week_start: string;
@@ -153,13 +152,13 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
       const seen = new Set<string>();
 
       scheduleData.forEach((row: any) => {
-        const employee = fieldEmployees.find(e => e.id === row.employee_id);
+        const employee = fieldEmployees.find(e => e.id === row.employee_fk);
         if (!employee || !employee.is_active) return;
 
         const key = employee.id;
         
         // Determine jobsite name
-        let jobsiteName = row.week_assignment_name || 'Unknown';
+        let jobsiteName = row.assignment_type || row.jobsite_name || 'Unknown';
         if (row.jobsite_id) {
           const jobsite = jobsites.find(j => j.id === row.jobsite_id);
           if (jobsite) {
@@ -169,13 +168,12 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
 
         if (!employeeMap.has(key)) {
           employeeMap.set(key, {
-            employee_id: employee.employee_id_ref.toString(),
             employee_fk: employee.id,
             email: employee.email,
             jobsite_names: [jobsiteName],
             week_start: row.week_start,
             days: [row.days || []],
-            status: row.week_status || row.value_type || 'assigned'
+            status: row.status || row.value_type || 'assigned'
           });
           seen.add(`${key}-${jobsiteName}`);
         } else {
@@ -212,7 +210,7 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
 
       // Update local state
       const newAssignments = assignments.filter(a => 
-        !( (a.employee_id === employee.employee_id_ref || (a.email && a.email.toLowerCase() === employee.email.toLowerCase())) && a.week_start === weekStr)
+        !( (a.employee_fk === employee.id || (a.email && a.email.toLowerCase() === employee.email.toLowerCase())) && a.week_start === weekStr)
       );
       
       if (targetJobsiteName !== 'Unassigned') {
@@ -249,12 +247,12 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
           }
         } else {
           const payload = {
-            employee_id: employee.employee_id_ref,
+            employee_fk: employee.id,
             email: employee.email,
             first_name: employee.first_name,
             last_name: employee.last_name,
             week_start: weekStr,
-            assignment_name: targetJobsiteName,
+            assignment_type: targetJobsiteName,
             status: 'assigned',
             value_type: 'jobsite'
           };
@@ -456,7 +454,7 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
 
     // Update local state
     const newAssignments = assignments.filter(a => 
-      !( (a.employee_id === employee.employee_id_ref || (a.email && a.email.toLowerCase() === employee.email.toLowerCase())) && a.week_start === weekStr)
+      !( (a.employee_fk === employee.id || (a.email && a.email.toLowerCase() === employee.email.toLowerCase())) && a.week_start === weekStr)
     );
     
     const jobsiteNames: string[] = [];
@@ -471,7 +469,7 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
     });
 
     newAssignments.push({
-      employee_id: employee.employee_id_ref.toString(),
+      employee_fk: employee.id,
       email: employee.email,
       jobsite_names: jobsiteNames,
       week_start: weekStr,
@@ -488,7 +486,7 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
       let { data: week, error: weekError } = await supabase
         .from('assignment_weeks')
         .select('id')
-        .eq('email', employee.email)
+        .eq('employee_fk', employee.id)
         .eq('week_start', weekStr)
         .maybeSingle();
 
@@ -500,7 +498,7 @@ export default function ManpowerView({ employees, jobsites, jobsiteGroups }: Man
         const { data: newWeek, error: insertWeekError } = await supabase
           .from('assignment_weeks')
           .insert({
-            employee_id: employee.employee_id_ref,
+            employee_fk: employee.id,
             email: employee.email,
             first_name: employee.first_name,
             last_name: employee.last_name,

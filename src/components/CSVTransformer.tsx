@@ -35,7 +35,7 @@ export default function CSVTransformer() {
           const data = results.data as any[];
           const headers = results.meta.fields || [];
           
-          const idVars = ['employee_id', 'email', 'first_name', 'last_name', 'id'];
+          const idVars = ['employee_fk', 'email', 'first_name', 'last_name', 'id'];
           const fixedHeaders = headers.filter(h => idVars.includes(h.toLowerCase()));
           const dateHeaders = headers.filter(h => !idVars.includes(h.toLowerCase()));
 
@@ -61,7 +61,7 @@ export default function CSVTransformer() {
                 }
 
                 newRow.week_start = formattedDate;
-                newRow.assignment_name = assignment;
+                newRow.assignment_type = assignment;
                 tallData.push(newRow);
               }
             });
@@ -110,8 +110,8 @@ export default function CSVTransformer() {
       header: true,
       complete: (results) => {
         const data = results.data as any[];
-        const uniqueJobsites = Array.from(new Set(data.map(j => j.jobsite_name || j.assignment_name))).map(name => {
-          const site = data.find(j => (j.jobsite_name || j.assignment_name) === name);
+        const uniqueJobsites = Array.from(new Set(data.map(j => j.jobsite_name || j.assignment_type))).map(name => {
+          const site = data.find(j => (j.jobsite_name || j.assignment_type) === name);
           return {
             jobsite_id_ref: site.jobsite_id || '',
             jobsite_name: name,

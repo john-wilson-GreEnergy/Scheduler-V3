@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.portal_required_action_completions (
     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at timestamp with time zone DEFAULT now(),
     action_id uuid REFERENCES public.portal_required_actions(id) ON DELETE CASCADE,
-    employee_id uuid REFERENCES public.employees(id) ON DELETE CASCADE,
+    employee_fk uuid REFERENCES public.employees(id) ON DELETE CASCADE,
     email text,
     first_name text,
     last_name text,
@@ -56,12 +56,12 @@ CREATE POLICY "Admin/Super Admin full access on completions" ON public.portal_re
 DROP POLICY IF EXISTS "Employees can read their own completions" ON public.portal_required_action_completions;
 CREATE POLICY "Employees can read their own completions" ON public.portal_required_action_completions
     FOR SELECT TO authenticated
-    USING (employee_id IN (SELECT id FROM public.employees WHERE auth_user_id = auth.uid()));
+    USING (employee_fk IN (SELECT id FROM public.employees WHERE auth_user_id = auth.uid()));
 
 DROP POLICY IF EXISTS "Employees can insert their own completions" ON public.portal_required_action_completions;
 CREATE POLICY "Employees can insert their own completions" ON public.portal_required_action_completions
     FOR INSERT TO authenticated
-    WITH CHECK (employee_id IN (SELECT id FROM public.employees WHERE auth_user_id = auth.uid()));
+    WITH CHECK (employee_fk IN (SELECT id FROM public.employees WHERE auth_user_id = auth.uid()));
 
 -- Migration: Move existing high priority actions to the new table
 -- Note: This assumes portal_actions still has the data.
@@ -79,10 +79,10 @@ CREATE POLICY "Employees can insert their own completions" ON public.portal_requ
 
 -- Migration: Move completions
 -- INSERT INTO public.portal_required_action_completions (
---     id, created_at, action_id, employee_id, email, first_name, last_name, completed_at
+--     id, created_at, action_id, employee_fk, email, first_name, last_name, completed_at
 -- )
 -- SELECT 
---     c.id, c.created_at, c.action_id, c.employee_id, c.email, c.first_name, c.last_name, c.completed_at
+--     c.id, c.created_at, c.action_id, c.employee_fk, c.email, c.first_name, c.last_name, c.completed_at
 -- FROM public.portal_action_completions c
 -- JOIN public.portal_actions a ON c.action_id = a.id
 -- WHERE a.priority = 'high';

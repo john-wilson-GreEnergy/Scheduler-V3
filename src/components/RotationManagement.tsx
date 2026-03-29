@@ -118,7 +118,8 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
               .insert({
                 employee_fk: emp.id,
                 week_start: weekStr,
-                status: isRotation ? 'assigned' : 'unassigned'
+                status: isRotation ? 'assigned' : 'unassigned',
+                assignment_type: isRotation ? 'Rotation' : null
               })
               .select('id, status')
               .single();
@@ -128,7 +129,10 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
             // Update status if it changed
             const { data: updatedWeek, error: updateError } = await supabase
               .from('assignment_weeks')
-              .update({ status: isRotation ? 'assigned' : 'unassigned' })
+              .update({ 
+                status: isRotation ? 'assigned' : 'unassigned',
+                assignment_type: isRotation ? 'Rotation' : null
+              })
               .eq('id', existingWeek.id)
               .select('id, status')
               .single();
@@ -154,7 +158,8 @@ export default function RotationManagement({ employees, onUpdate }: RotationMana
                 jobsite_fk: rotationJobsite.id,
                 days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
                 item_order: 0,
-                week_start: weekStr
+                week_start: weekStr,
+                assignment_type: 'Rotation'
               });
             }
           } else if (isRotation && !rotationJobsite) {

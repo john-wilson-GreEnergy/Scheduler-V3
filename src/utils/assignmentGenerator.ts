@@ -16,40 +16,36 @@ export async function generateAssignmentWeeksForEmployee(employee: Employee, wee
     const isRotation = isRotationWeek(week, employee.rotation_config, employee.rotation_group);
     
     updates.push({
-      employee_id: employee.id,
-      email: employee.email,
+      employee_fk: employee.id,
       week_start: weekStr,
-      assignment_name: isRotation ? 'Rotation' : null,
-      value_type: isRotation ? 'rotation' : 'work',
-      status: isRotation ? 'assigned' : 'unassigned',
-      first_name: employee.first_name,
-      last_name: employee.last_name
+      assignment_type: isRotation ? 'Rotation' : null,
+      status: isRotation ? 'assigned' : 'unassigned'
     });
   }
 
   if (updates.length > 0) {
     const { error } = await supabase
       .from('assignment_weeks')
-      .upsert(updates);
+      .upsert(updates, { onConflict: 'employee_fk,week_start' });
     
     if (error) throw error;
 
     // Fetch IDs for the inserted weeks
     const { data: weeksData, error: fetchError } = await supabase
       .from('assignment_weeks')
-      .select('id, week_start, assignment_name')
-      .eq('employee_id', employee.id)
+      .select('id, week_start, assignment_type')
+      .eq('employee_fk', employee.id)
       .in('week_start', updates.map(u => u.week_start));
     
     if (fetchError) throw fetchError;
 
     // Insert assignment_items
     const items = weeksData.map(week => {
-      const jobsite = jobsites.find(j => j.jobsite_name === week.assignment_name);
+      const jobsite = jobsites?.find(j => j.jobsite_name === week.assignment_type);
       return {
         assignment_week_fk: week.id,
         jobsite_fk: jobsite?.id || null,
-        days: [1, 2, 3, 4, 5]
+        days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
       };
     }).filter(item => item.jobsite_fk);
 

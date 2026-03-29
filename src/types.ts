@@ -17,7 +17,6 @@ export interface AssignmentWeek {
   week_start: string;
   status: string;
   assignment_type?: string;
-  assignment_name?: string;
   created_at?: string;
   assignment_items?: AssignmentItem[];
 }

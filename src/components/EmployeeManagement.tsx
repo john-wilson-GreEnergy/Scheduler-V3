@@ -147,7 +147,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       await syncEmployeeAssignmentsBackend(editingRotation.id);
 
       logActivity('rotation_update', {
-        employee_id: editingRotation.id,
+        employee_fk: editingRotation.id,
         name: `${editingRotation.first_name} ${editingRotation.last_name}`,
         config: rotationForm
       });
@@ -201,7 +201,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
             await syncEmployeeAssignmentsBackend(editingEmployee.id, rotationForm.anchor_date);
         }
         
-        logActivity('employee_update', { id: editingEmployee.id, ...payload });
+        logActivity('employee_update', { employee_fk: editingEmployee.id, ...payload });
       } else {
         const { data, error } = await supabase
           .from('employees')
@@ -213,7 +213,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
         // Use backend to generate initial assignments
         await syncEmployeeAssignmentsBackend(newEmployee.id);
         
-        logActivity('employee_create', payload);
+        logActivity('employee_create', { employee_fk: newEmployee.id, ...payload });
       }
 
       setEditingEmployee(null);
@@ -235,9 +235,9 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       await supabase.from('employees').update({ is_active: false }).eq('id', editingEmployee.id);
       
       // 2. Delete future assignments
-      await supabase.from('assignment_weeks').delete().eq('employee_id', editingEmployee.id).gte('week_start', currentWeek);
+      await supabase.from('assignment_weeks').delete().eq('employee_fk', editingEmployee.id).gte('week_start', currentWeek);
       
-      logActivity('employee_remove', { id: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
+      logActivity('employee_remove', { employee_fk: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
       
       setEditingEmployee(null);
       onUpdate(true);
@@ -252,12 +252,12 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
 
     try {
       // 1. Delete all assignments
-      await supabase.from('assignment_weeks').delete().eq('employee_id', editingEmployee.id);
+      await supabase.from('assignment_weeks').delete().eq('employee_fk', editingEmployee.id);
       
       // 2. Delete employee
       await supabase.from('employees').delete().eq('id', editingEmployee.id);
       
-      logActivity('employee_nuclear_delete', { id: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
+      logActivity('employee_nuclear_delete', { employee_fk: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
       
       setEditingEmployee(null);
       onUpdate(true);
@@ -338,7 +338,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       
       const emp = employees.find(e => e.id === id);
       logActivity('employee_toggle', { 
-        employee_id: id, 
+        employee_fk: id, 
         name: `${emp?.first_name} ${emp?.last_name}`,
         new_status: newStatus 
       });
@@ -1026,7 +1026,11 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
 
                       if (error) throw error;
 
-                      await logActivity('batch_update_roles', `Updated roles for ${selectedEmployeeIds.length} employees to ${batchRole}`);
+                      await logActivity('batch_update_roles', {
+                        employee_fks: selectedEmployeeIds,
+                        new_role: batchRole,
+                        count: selectedEmployeeIds.length
+                      });
                       onUpdate();
                       setIsBatchEditModalOpen(false);
                       setSelectedEmployeeIds([]);

@@ -73,7 +73,8 @@ export default function Analytics({ employees, jobsites }: AnalyticsProps) {
 
             rows.forEach(row => {
               const status = row.status?.toLowerCase().trim();
-              const assignmentNames = parseAssignmentNames(row.assignment_name);
+              const effectiveAssignmentType = row.assignment_type || row.jobsite_name;
+              const assignmentNames = parseAssignmentNames(effectiveAssignmentType);
               
               // Check if rotation jobsite ID is in items
               const isRotationJobsite = row.jobsite_fk === rotationJobsiteId;

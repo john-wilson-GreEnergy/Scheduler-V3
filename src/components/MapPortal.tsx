@@ -195,7 +195,7 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
         // Match employee by email or ID ref (robust matching)
         const employee = allEmployees.find(e => 
           (row.email && e.email.toLowerCase() === row.email.toLowerCase()) ||
-          (row.employee_id && e.employee_id_ref === row.employee_id) ||
+          (row.employee_id && e.id === row.employee_id) ||
           (row.employee_fk && e.id === row.employee_fk)
         );
 
@@ -205,9 +205,9 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
         if (row.jobsite_id) {
           addToSite(row.jobsite_id, employee);
         } 
-        // 2. Fallback to assignment_name matching
-        else if (row.assignment_name) {
-          const assignmentNames = parseAssignmentNames(row.assignment_name);
+        // 2. Fallback to assignment_type matching
+        else if (row.assignment_type || row.jobsite_name) {
+          const assignmentNames = parseAssignmentNames(row.assignment_type || row.jobsite_name);
           
           assignmentNames.forEach(name => {
             const trimmedName = name.trim().toLowerCase();

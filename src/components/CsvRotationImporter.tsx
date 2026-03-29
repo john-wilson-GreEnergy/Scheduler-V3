@@ -31,13 +31,33 @@ export function CsvRotationImporter({ onImportSuccess }: { onImportSuccess: () =
           const data = results.data as any[];
           const rotationAssignments: any[] = [];
 
+          // Fetch all employees to map employee_id_ref to UUID id
+          const { data: employees, error: empError } = await supabase
+            .from('employees')
+            .select('id, employee_id_ref');
+          
+          if (empError) throw empError;
+
+          const empMap = new Map<string, string>();
+          employees?.forEach(emp => {
+            if (emp.employee_id_ref) {
+              empMap.set(emp.employee_id_ref.toString(), emp.id);
+            }
+          });
+
           // The spreadsheet has dates in headers starting from column G (index 6)
           // We need to map these headers to week_start dates.
           const headers = results.meta.fields || [];
           
           for (const row of data) {
-            const employeeId = row['']; // Assuming column A is employee_id_ref
-            if (!employeeId) continue;
+            const employeeIdRef = row['']; // Assuming column A is employee_id_ref
+            if (!employeeIdRef) continue;
+
+            const employeeFk = empMap.get(employeeIdRef.toString());
+            if (!employeeFk) {
+              console.warn(`Employee with ID ref ${employeeIdRef} not found in database.`);
+              continue;
+            }
 
             for (let i = 6; i < headers.length; i++) {
               const weekStart = headers[i]; // e.g., "03/16/26"
@@ -49,11 +69,10 @@ export function CsvRotationImporter({ onImportSuccess }: { onImportSuccess: () =
                 const formattedDate = `20${dateParts[2]}-${dateParts[0].padStart(2, '0')}-${dateParts[1].padStart(2, '0')}`;
 
                 rotationAssignments.push({
-                  employee_id: employeeId,
+                  employee_fk: employeeFk,
                   week_start: formattedDate,
-                  status: 'rotation',
-                  assignment_name: null,
-                  value_type: 'rotation'
+                  assignment_type: 'rotation',
+                  status: 'active'
                 });
               }
             }
@@ -66,7 +85,7 @@ export function CsvRotationImporter({ onImportSuccess }: { onImportSuccess: () =
           for (const assignment of rotationAssignments) {
             const { error: upsertError } = await supabase
               .from('assignment_weeks')
-              .upsert(assignment, { onConflict: 'employee_id,week_start' });
+              .upsert(assignment, { onConflict: 'employee_fk,week_start' });
             
             if (upsertError) throw upsertError;
           }

@@ -186,7 +186,7 @@ export default function EmployeePortal() {
       .replace(/{{first_name}}/g, encodeURIComponent(employee.first_name))
       .replace(/{{last_name}}/g, encodeURIComponent(employee.last_name))
       .replace(/{{employee_id}}/g, encodeURIComponent(employee.employee_id_ref))
-      .replace(/{{current_site}}/g, encodeURIComponent(currentAssignment?.assignment_name || ''))
+      .replace(/{{current_site}}/g, encodeURIComponent(currentAssignment?.assignment_type || ''))
       .replace(/{{current_customer}}/g, encodeURIComponent(currentCustomer || ''))
       .replace(/{{id}}/g, encodeURIComponent(employee.id));
   };
@@ -225,8 +225,8 @@ export default function EmployeePortal() {
             .order('week_start', { ascending: false }),
           supabase.from('portal_requests').select('*').eq('employee_fk', employee.id).order('created_at', { ascending: false }),
           supabase.from('recent_activity').select('*').eq('employee_fk', employee.id).order('created_at', { ascending: false }).limit(5),
-          supabase.from('portal_action_completions').select('action_id').eq('employee_id', employee.id),
-          supabase.from('portal_required_action_completions').select('action_id').eq('employee_id', employee.id)
+          supabase.from('portal_action_completions').select('action_id').eq('employee_fk', employee.id),
+          supabase.from('portal_required_action_completions').select('action_id').eq('employee_fk', employee.id)
         );
       } else {
         console.log('No employee object available, skipping assignment data fetch.');
@@ -346,7 +346,7 @@ export default function EmployeePortal() {
 
   const findNextDifferentAssignment = () => {
     if (!currentAssignment || upcomingAssignments.length === 0) return null;
-    return upcomingAssignments.find(a => a.assignment_name !== currentAssignment.assignment_name) || null;
+    return upcomingAssignments.find(a => a.assignment_type !== currentAssignment.assignment_type) || null;
   };
 
   const getRequestProgress = (status: string) => {
@@ -393,7 +393,7 @@ export default function EmployeePortal() {
     try {
       const { error } = await supabase.from(table).insert({
         action_id: action.id,
-        employee_id: employee.id,  // UUID, not employee_id_ref
+        employee_fk: employee.id,  // UUID, not employee_id_ref
         email: employee.email,
         first_name: employee.first_name,
         last_name: employee.last_name,
@@ -407,6 +407,7 @@ export default function EmployeePortal() {
       await logActivity('action_completed', {
         action_title: action.title,
         action_id: action.id,
+        employee_fk: employee.id,
         employee_name: `${employee.first_name} ${employee.last_name}`,
         employee_email: employee.email,
         completed_at: new Date().toISOString()

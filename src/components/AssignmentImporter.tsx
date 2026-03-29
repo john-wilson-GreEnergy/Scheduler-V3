@@ -117,12 +117,17 @@ export const AssignmentImporter: React.FC = () => {
                       assignment_week_fk: weekData.id,
                       jobsite_fk: site.id,
                       days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-                      item_order: 1,
-                      assignment_type: site.jobsite_name,
-                      week_start: weekData.week_start,
-                      employee_fk: employee.id, // Added for notification logic
-                      employee_name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || employee.email
+                      item_order: 1
                     });
+                    
+                    // Store metadata for notification logic (not for DB insertion)
+                    (itemsToInsert[itemsToInsert.length - 1] as any)._meta = {
+                      employee_fk: employee.id,
+                      employee_name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || employee.email,
+                      week_start: weekData.week_start,
+                      assignment_type: site.jobsite_name
+                    };
+
                     existingAssignments.add(assignmentKey); // Prevent duplicates in same batch
                   } else {
                     console.log('Assignment item already exists, skipping:', assignmentKey);
@@ -141,7 +146,9 @@ export const AssignmentImporter: React.FC = () => {
 
       if (itemsToInsert.length > 0) {
         console.log('Attempting to insert assignment_items:', itemsToInsert);
-        const { error: insertError } = await supabase.from('assignment_items').insert(itemsToInsert);
+        // Strip _meta before insertion
+        const dbItems = itemsToInsert.map(({ _meta, ...rest }: any) => rest);
+        const { error: insertError } = await supabase.from('assignment_items').insert(dbItems);
         if (insertError) {
           console.error('Error inserting assignment_items:', insertError);
         } else {
@@ -150,14 +157,15 @@ export const AssignmentImporter: React.FC = () => {
           // Send notifications for imported assignments
           const employeeAssignments = new Map<string, any[]>();
           itemsToInsert.forEach((item: any) => {
-            if (item.employee_fk) {
-              if (!employeeAssignments.has(item.employee_fk)) {
-                employeeAssignments.set(item.employee_fk, []);
+            const meta = item._meta;
+            if (meta && meta.employee_fk) {
+              if (!employeeAssignments.has(meta.employee_fk)) {
+                employeeAssignments.set(meta.employee_fk, []);
               }
-              employeeAssignments.get(item.employee_fk)?.push({
-                weekStart: item.week_start,
-                jobsiteName: item.assignment_type,
-                employeeName: item.employee_name
+              employeeAssignments.get(meta.employee_fk)?.push({
+                weekStart: meta.week_start,
+                jobsiteName: meta.assignment_type,
+                employeeName: meta.employee_name
               });
             }
           });

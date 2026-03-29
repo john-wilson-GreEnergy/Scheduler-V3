@@ -68,9 +68,23 @@ export default function SiteManagerPortal() {
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [currentAssignment, setCurrentAssignment] = useState<AssignmentWeek | null>(null);
   const [upcomingAssignments, setUpcomingAssignments] = useState<AssignmentWeek[]>([]);
-  const [requiredActions, setRequiredActions] = useState<PortalAction[]>([]);
   const [timelineIndex, setTimelineIndex] = useState(0);
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationConfig>>({});
+
+  const PLACEHOLDER_SITES = ['Rotation', 'Vacation', 'Personal'];
+
+  const isPlaceholderMode = useMemo(() => {
+    if (!jobsite) return false;
+    return PLACEHOLDER_SITES.some(s => s.toLowerCase() === jobsite.jobsite_name.toLowerCase());
+  }, [jobsite]);
+
+  const personalStatus = useMemo(() => {
+    if (!currentAssignment) return null;
+    const status = currentAssignment.status?.toLowerCase();
+    const name = currentAssignment.assignment_name?.toLowerCase();
+    const found = PLACEHOLDER_SITES.find(s => s.toLowerCase() === status || s.toLowerCase() === name);
+    return found || null;
+  }, [currentAssignment]);
 
   const canWrite = useMemo(() => {
     if (!jobsite || !jobsite.manager || !employee) return false;
@@ -108,12 +122,6 @@ export default function SiteManagerPortal() {
         .eq('active', true)
         .order('sort_order', { ascending: true });
 
-      const { data: reqActions } = await supabase
-        .from('portal_required_actions')
-        .select('*')
-        .eq('active', true)
-        .order('sort_order', { ascending: true });
-
       const todayStr = format(new Date(), 'yyyy-MM-dd');
       const { data: announcements } = await supabase
         .from('announcements')
@@ -131,7 +139,6 @@ export default function SiteManagerPortal() {
       setAllJobsites(allSites || []);
       setJobsiteGroups(groups || []);
       setPortalActions(portalActions || []);
-      setRequiredActions(reqActions || []);
       setAnnouncements(announcements || []);
       setRecentActivity(recentActivity || []);
 
@@ -165,27 +172,32 @@ export default function SiteManagerPortal() {
       }
     }
 
-    // If no manager match, find site via current week assignment_weeks email
+      // If no manager match, find site via current week assignment_weeks email
       let assignmentSite: Jobsite | null = null;
-      if (!managedSite && employee?.email) {
+      if (employee?.email) {
         const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
-        const { data: currentAssignment } = await supabase
+        const { data: currentAssignmentData } = await supabase
           .from('assignment_weeks')
-          .select('assignment_name')
+          .select('assignment_name, status')
           .eq('email', employee.email)
           .eq('week_start', weekStart)
           .maybeSingle();
 
-        if (currentAssignment?.assignment_name) {
-          const assignmentNames = parseAssignmentNames(currentAssignment.assignment_name);
+        if (currentAssignmentData?.assignment_name || currentAssignmentData?.status) {
+          const assignmentNames = parseAssignmentNames(currentAssignmentData.assignment_name || '');
+          const status = currentAssignmentData.status || '';
+          
           assignmentSite = (allSites || []).find(
             s => assignmentNames.includes(s.jobsite_group || '') ||
-                 assignmentNames.includes(s.jobsite_name || '')
+                 assignmentNames.includes(s.jobsite_name || '') ||
+                 s.jobsite_name.toLowerCase() === status.toLowerCase()
           ) || null;
         }
       }
 
-      const siteToUse = managedSite || assignmentSite || (allSites && allSites[0]) || null;
+      // Priority: 1. Placeholder assignment, 2. Managed site, 3. Any assignment, 4. First site
+      const isPlaceholderAssignment = assignmentSite && PLACEHOLDER_SITES.some(s => s.toLowerCase() === assignmentSite?.jobsite_name.toLowerCase());
+      const siteToUse = (isPlaceholderAssignment ? assignmentSite : managedSite) || assignmentSite || (allSites && allSites[0]) || null;
       setJobsite(siteToUse);
 
       // Resolve the group: if the site has a jobsite_group, combine all sites in that group
@@ -199,6 +211,7 @@ export default function SiteManagerPortal() {
 
       if (siteToUse) {
         const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
+        const isPlaceholder = PLACEHOLDER_SITES.some(s => s.toLowerCase() === siteToUse.jobsite_name.toLowerCase());
 
         // Build list of names to match against assignment_name:
         // includes the site itself, its group, and any site in the same group
@@ -269,11 +282,13 @@ export default function SiteManagerPortal() {
         });
 
         const enriched: SiteEmployee[] = (empData || [])
-          .filter(emp =>
-            (assignedRefs.has(emp.id) ||
-            assignedRefs.has(emp.email)) &&
-            emp.role !== 'hr'
-          )
+          .filter(emp => {
+            // If in placeholder mode, only show the manager themselves
+            if (isPlaceholder) {
+              return emp.id === employee?.id;
+            }
+            return (assignedRefs.has(emp.id) || assignedRefs.has(emp.email)) && emp.role !== 'hr';
+          })
           .map(emp => {
             const config = configMap[emp.id];
             const assignmentForWeek = assignmentMap[emp.id];
@@ -303,25 +318,12 @@ export default function SiteManagerPortal() {
           setRequests(reqData || []);
 
           // Fetch action completions for site employees
-          const [compData, reqCompData] = await Promise.all([
-            supabase
-              .from('portal_action_completions')
-              .select('*, action:portal_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
-              .in('employee_id', empIds)
-              .order('completed_at', { ascending: false }),
-            supabase
-              .from('portal_required_action_completions')
-              .select('*, action:portal_required_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
-              .in('employee_id', empIds)
-              .order('completed_at', { ascending: false })
-          ]);
-
-          const allCompletions = [
-            ...(compData.data || []),
-            ...(reqCompData.data || [])
-          ].sort((a, b) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime());
-
-          setCompletions(allCompletions);
+          const { data: compData } = await supabase
+            .from('portal_action_completions')
+            .select('*, action:portal_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
+            .in('employee_id', empIds)
+            .order('completed_at', { ascending: false });
+          setCompletions(compData || []);
         }
       }
     } catch (err) {
@@ -370,26 +372,34 @@ export default function SiteManagerPortal() {
   const onRotationCount = siteEmployees.filter(e => e.is_on_rotation).length;
   const pendingCompletions = completions.filter(c => !c.confirmed_at).length;
 
-  const tabs = [
-    { id: 'overview', label: 'Overview', icon: <BarChart3 size={16} />, category: 'Site' },
-    { id: 'chat', label: 'Crew Chat', icon: <MessageSquare size={16} />, category: 'Site' },
-    { id: 'jobsite-info', label: 'Jobsite', icon: <Info size={16} />, category: 'Site' },
-    { id: 'roster', label: 'Roster', icon: <Users size={16} />, category: 'Site' },
-    { id: 'schedule', label: 'Schedule', icon: <Calendar size={16} />, category: 'Site' },
-    { id: 'surveys', label: 'Surveys', icon: <MessageSquare size={16} />, category: 'Management' },
-    { id: 'requests', label: `Requests${pendingCount > 0 ? ` (${pendingCount})` : ''}`, icon: <ClipboardList size={16} />, category: 'Management' },
-    { id: 'actions', label: 'GreEnergy Links', icon: <Layers size={16} />, category: 'Management' },
-    { id: 'completions', label: `Action Completions${pendingCompletions > 0 ? ` (${pendingCompletions})` : ''}`, icon: <CheckCircle2 size={16} />, category: 'Management' },
-    { id: 'importer', label: 'Assignment Importer', icon: <ClipboardList size={16} />, category: 'Management' },
-    { id: 'map', label: 'Map', icon: <MapPin size={16} />, category: 'Management' },
-  ];
+  const tabs = useMemo(() => {
+    const allTabs = [
+      { id: 'overview', label: 'Overview', icon: <BarChart3 size={16} />, category: 'Site' },
+      { id: 'chat', label: 'Crew Chat', icon: <MessageSquare size={16} />, category: 'Site' },
+      { id: 'jobsite-info', label: 'Jobsite', icon: <Info size={16} />, category: 'Site' },
+      { id: 'roster', label: 'Roster', icon: <Users size={16} />, category: 'Site' },
+      { id: 'schedule', label: 'Schedule', icon: <Calendar size={16} />, category: 'Site' },
+      { id: 'surveys', label: 'Surveys', icon: <MessageSquare size={16} />, category: 'Management' },
+      { id: 'requests', label: `Requests${pendingCount > 0 ? ` (${pendingCount})` : ''}`, icon: <ClipboardList size={16} />, category: 'Management' },
+      { id: 'actions', label: 'GreEnergy Links', icon: <Layers size={16} />, category: 'Management' },
+      { id: 'completions', label: `Action Completions${pendingCompletions > 0 ? ` (${pendingCompletions})` : ''}`, icon: <CheckCircle2 size={16} />, category: 'Management' },
+      { id: 'importer', label: 'Assignment Importer', icon: <ClipboardList size={16} />, category: 'Management' },
+      { id: 'map', label: 'Map', icon: <MapPin size={16} />, category: 'Management' },
+    ];
+
+    if (isPlaceholderMode) {
+      // Only show personal/management tabs when on rotation/vacation/personal
+      return allTabs.filter(t => ['overview', 'requests', 'actions', 'completions'].includes(t.id));
+    }
+
+    return allTabs;
+  }, [isPlaceholderMode, pendingCount, pendingCompletions]);
 
   const handleMarkComplete = async (action: PortalAction) => {
     if (!employee) return;
-    const table = action.priority === 'high' ? 'portal_required_action_completions' : 'portal_action_completions';
     try {
       await supabase
-        .from(table)
+        .from('portal_action_completions')
         .insert({
           action_id: action.id,
           email: employee.email,
@@ -456,37 +466,71 @@ export default function SiteManagerPortal() {
     >
       <AnimatePresence>
 
+        {/* ── PERSONAL STATUS BANNER ── */}
+        {personalStatus && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`mb-6 p-4 rounded-2xl border flex items-center justify-between ${
+              personalStatus.toLowerCase() === 'rotation' ? 'bg-purple-500/10 border-purple-500/20 text-purple-400' :
+              personalStatus.toLowerCase() === 'vacation' ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' :
+              'bg-amber-500/10 border-amber-500/20 text-amber-400'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                personalStatus.toLowerCase() === 'rotation' ? 'bg-purple-500/20' :
+                personalStatus.toLowerCase() === 'vacation' ? 'bg-blue-500/20' :
+                'bg-amber-500/20'
+              }`}>
+                {personalStatus.toLowerCase() === 'rotation' ? <RefreshCw size={20} /> :
+                 personalStatus.toLowerCase() === 'vacation' ? <Calendar size={20} /> :
+                 <Clock size={20} />}
+              </div>
+              <div>
+                <p className="text-sm font-bold">You are currently on {personalStatus}</p>
+                <p className="text-[10px] opacity-70 uppercase tracking-wider">Week of {currentWeekStart}</p>
+              </div>
+            </div>
+            <div className="text-[10px] font-bold uppercase tracking-widest px-3 py-1 bg-white/5 rounded-full">
+              Personal Dashboard Mode
+            </div>
+          </motion.div>
+        )}
+
         {/* ── OVERVIEW ── */}
         {activeTab === 'overview' && (
           <motion.div key="overview" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
 
             {/* Weather at the top */}
-            {jobsite?.lat && jobsite?.lng && (
+            {jobsite?.lat && jobsite?.lng && !isPlaceholderMode && (
               <WeatherWidget lat={jobsite.lat} lng={jobsite.lng} locationName={jobsite.jobsite_name} />
             )}
 
             {/* KPI strip */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              {[
-                { label: 'Total Assigned', value: siteEmployees.length, icon: <Users size={20} />, color: 'emerald' },
-                { label: 'Active on Site', value: activeCount, icon: <UserCheck size={20} />, color: 'emerald' },
-                { label: 'On Rotation', value: onRotationCount, icon: <RefreshCw size={20} />, color: 'purple' },
-                { label: 'Open Requests', value: pendingCount, icon: <ClipboardList size={20} />, color: pendingCount > 0 ? 'amber' : 'emerald' },
-              ].map((kpi, i) => (
-                <motion.div key={i} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
-                  className="bg-[#0A120F] border border-white/5 rounded-2xl p-6">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${
-                    kpi.color === 'amber' ? 'bg-amber-500/10 text-amber-400' :
-                    kpi.color === 'purple' ? 'bg-purple-500/10 text-purple-400' :
-                    'bg-emerald-500/10 text-emerald-500'
-                  }`}>
-                    {kpi.icon}
-                  </div>
-                  <p className="text-3xl font-bold text-white">{kpi.value}</p>
-                  <p className="text-xs text-gray-500 mt-1 uppercase tracking-widest font-bold">{kpi.label}</p>
-                </motion.div>
-              ))}
-            </div>
+            {!isPlaceholderMode && (
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  { label: 'Total Assigned', value: siteEmployees.length, icon: <Users size={20} />, color: 'emerald' },
+                  { label: 'Active on Site', value: activeCount, icon: <UserCheck size={20} />, color: 'emerald' },
+                  { label: 'On Rotation', value: onRotationCount, icon: <RefreshCw size={20} />, color: 'purple' },
+                  { label: 'Open Requests', value: pendingCount, icon: <ClipboardList size={20} />, color: pendingCount > 0 ? 'amber' : 'emerald' },
+                ].map((kpi, i) => (
+                  <motion.div key={i} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
+                    className="bg-[#0A120F] border border-white/5 rounded-2xl p-6">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${
+                      kpi.color === 'amber' ? 'bg-amber-500/10 text-amber-400' :
+                      kpi.color === 'purple' ? 'bg-purple-500/10 text-purple-400' :
+                      'bg-emerald-500/10 text-emerald-500'
+                    }`}>
+                      {kpi.icon}
+                    </div>
+                    <p className="text-3xl font-bold text-white">{kpi.value}</p>
+                    <p className="text-xs text-gray-500 mt-1 uppercase tracking-widest font-bold">{kpi.label}</p>
+                  </motion.div>
+                ))}
+              </div>
+            )}
 
             {/* Today at GreEnergy & Required Actions */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -537,11 +581,11 @@ export default function SiteManagerPortal() {
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-bold text-white">Required Actions</h2>
                   <span className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-gray-500">
-                    {requiredActions.length}
+                    {portalActions.filter(a => a.priority === 'high').length}
                   </span>
                 </div>
                 <div className="space-y-3">
-                  {requiredActions.map(action => {
+                  {portalActions.filter(a => a.priority === 'high').map(action => {
                     const isCompleted = completions.some(c => c.action_id === action.id && c.employee_id === employee?.id);
                     return (
                       <div key={action.id} className={`border rounded-2xl overflow-hidden transition-all ${isCompleted ? 'border-emerald-500/20' : 'border-white/5'}`}>
@@ -637,8 +681,8 @@ export default function SiteManagerPortal() {
             </div>
             {/* Jobsite Info Card & Assignment Timeline */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {jobsite && <JobsiteInfoCard jobsite={jobsite} />}
-              <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
+              {jobsite && !isPlaceholderMode && <JobsiteInfoCard jobsite={jobsite} />}
+              <div className={`${isPlaceholderMode ? 'lg:col-span-2' : ''} bg-[#0A120F] border border-white/5 rounded-3xl p-8`}>
                 <div className="flex items-center justify-between mb-8">
                   <div>
                     <h2 className="text-2xl font-bold text-white">Assignment Timeline</h2>

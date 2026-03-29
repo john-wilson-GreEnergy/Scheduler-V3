@@ -171,12 +171,13 @@ export default function BulkAssignments({ employees, jobsites, jobsiteGroups }: 
     console.log('Applying assignments:', { plannedChanges, selectedEmployees, selectedJobsites, selectedWeeks });
     try {
       // 1. Prepare updates for assignment_weeks
-      const map = new Map<string, { employee_fk: string, week_start: string, assignment_type: string }>(plannedChanges.map(change => {
+      const map = new Map<string, { employee_fk: string, week_start: string, assignment_type: string, status: string }>(plannedChanges.map(change => {
         const emp = fieldEmployees.find(e => e.id === change.employeeId)!;
         return [`${emp.id}-${change.weekStart}`, {
           employee_fk: emp.id,
           week_start: change.weekStart,
-          assignment_type: change.jobsiteId === 'rotation' || change.jobsiteId === 'vacation' ? change.jobsiteId : 'jobsite'
+          assignment_type: change.jobsiteName,
+          status: 'assigned'
         }];
       }));
       const uniqueUpdates = Array.from(map.values());
@@ -236,9 +237,7 @@ export default function BulkAssignments({ employees, jobsites, jobsiteGroups }: 
                 assignment_week_fk: week.id,
                 jobsite_fk: site.id,
                 days: change.days,
-                week_start: week.week_start,
-                item_order: 0,
-                assignment_type: change.jobsiteId === 'rotation' || change.jobsiteId === 'vacation' ? change.jobsiteId : 'jobsite'
+                item_order: 0
             });
         });
       });
@@ -300,6 +299,7 @@ export default function BulkAssignments({ employees, jobsites, jobsiteGroups }: 
       }
 
       logActivity('bulk_assignment', {
+        employee_fks: selectedEmployees,
         employee_count: selectedEmployees.length,
         week_count: selectedWeeks.length,
         jobsite_ids: selectedJobsites

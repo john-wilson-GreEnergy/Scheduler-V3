@@ -97,7 +97,8 @@ export default function DataImporter({ employees, jobsites }: DataImporterProps)
               const weekAssignment = {
                 employee_fk: employee.id,
                 week_start: weekStart,
-                status: 'assigned'
+                status: 'assigned',
+                assignment_type: assignmentParts[0].trim()
               };
 
               // Find or create assignment_week
@@ -157,8 +158,7 @@ export default function DataImporter({ employees, jobsites }: DataImporterProps)
                   .insert({
                     assignment_week_fk: weekId,
                     jobsite_fk: jobsite.id,
-                    days: days,
-                    week_start: weekStart
+                    days: days
                   });
                 if (insertItemError) throw insertItemError;
               }

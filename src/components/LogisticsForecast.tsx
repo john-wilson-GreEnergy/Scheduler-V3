@@ -28,7 +28,7 @@ interface LogisticsForecastProps {
 }
 
 interface AssignmentData {
-  employee_id: string;
+  employee_fk: string;
   email?: string;
   jobsite_name: string;
   week_start: string;
@@ -68,14 +68,14 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
         const status = row.status?.toLowerCase().trim();
         if (status === 'rotation' || status === 'vacation') return;
 
-        const jobsiteNames = row.jobsite_name ? [row.jobsite_name] : parseAssignmentNames(row.assignment_name);
+        const jobsiteNames = row.jobsite_name ? [row.jobsite_name] : parseAssignmentNames(row.assignment_type);
 
         jobsiteNames.forEach(name => {
           if (['vacation', 'rotation'].includes(name.toLowerCase().trim())) return;
           const key = `${row.employee_fk || row.email}-${row.week_start}-${name}`;
           if (!seen.has(key)) {
             combined.push({
-              employee_id: row.employee_fk,
+              employee_fk: row.employee_fk,
               email: row.email,
               jobsite_name: name,
               week_start: row.week_start
@@ -114,7 +114,7 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
     assigned.forEach(a => {
       const emp = fieldEmployees.find(e => 
         (a.email && e.email.toLowerCase() === a.email.toLowerCase()) ||
-        (a.employee_id && e.id === a.employee_id)
+        (a.employee_fk && e.id === a.employee_fk)
       );
       if (emp && !assignedEmployeesMap.has(emp.id)) {
         assignedEmployeesMap.set(emp.id, emp);
@@ -307,10 +307,10 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
                   assignments.filter(a => a.week_start === week).forEach(a => {
                     const emp = fieldEmployees.find(e => 
                       (a.email && e.email.toLowerCase() === a.email.toLowerCase()) ||
-                      (a.employee_id && e.employee_id_ref === a.employee_id)
+                      (a.employee_fk && e.id === a.employee_fk)
                     );
                     if (emp) uniqueEmployees.add(emp.id);
-                    else if (a.employee_id) uniqueEmployees.add(a.employee_id); // Fallback
+                    else if (a.employee_fk) uniqueEmployees.add(a.employee_fk); // Fallback
                   });
                   const total = uniqueEmployees.size;
                   
