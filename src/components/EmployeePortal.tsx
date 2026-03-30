@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Search,
   AlertTriangle,
+  AlertCircle,
   Construction,
   Info,
   Truck,
@@ -57,9 +58,9 @@ export default function EmployeePortal() {
   const [portalRequests, setPortalRequests] = useState<any[]>([]);
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
+  const [selectedRequestType, setSelectedRequestType] = useState<'vacation' | 'time_off' | 'rotation_change' | 'jobsite_change' | 'ppe_safety' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [selectedRequestType, setSelectedRequestType] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [timelineIndex, setTimelineIndex] = useState(0);
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationConfig>>({});
@@ -313,20 +314,14 @@ export default function EmployeePortal() {
     try {
       const weekStart = currentAssignment.week_start;
       const assignedSiteIds = currentAssignment.assignment_items?.map(item => item.jobsite_fk).filter(Boolean) || [];
+      console.log('Fetching roster for week:', weekStart, 'sites:', assignedSiteIds);
       
       if (assignedSiteIds.length === 0) {
         setRoster([]);
         return;
       }
 
-      // Expand siteIds to include all sites in the same groups for a full crew view
-      const groupIds = jobsites.filter(j => assignedSiteIds.includes(j.id)).map(j => j.group_id).filter(Boolean);
-      const expandedSiteIds = [...new Set([
-        ...assignedSiteIds,
-        ...jobsites.filter(j => j.group_id && groupIds.includes(j.group_id)).map(j => j.id)
-      ])];
-
-      // 1. Get all assignment_weeks for the same week that have an item in expandedSiteIds
+      // 1. Get all assignment_weeks for the same week that have an item in assignedSiteIds
       const { data: assignments, error: assignError } = await supabase
         .from('assignment_weeks')
         .select(`
@@ -336,9 +331,10 @@ export default function EmployeePortal() {
           )
         `)
         .eq('week_start', weekStart)
-        .in('assignment_items.jobsite_fk', expandedSiteIds);
+        .in('assignment_items.jobsite_fk', assignedSiteIds);
 
       if (assignError) throw assignError;
+      console.log('Assignments fetched:', assignments);
 
       const assignedEmpIds = new Set((assignments || []).map(a => a.employee_fk).filter(Boolean));
 
@@ -348,6 +344,7 @@ export default function EmployeePortal() {
       }
 
       // 2. Get all employees for these IDs
+      console.log('Fetching employees for IDs:', Array.from(assignedEmpIds));
       const { data: empData, error: empError } = await supabase
         .from('employees')
         .select('id, first_name, last_name, role, email')
@@ -355,6 +352,7 @@ export default function EmployeePortal() {
         .eq('is_active', true);
 
       if (empError) throw empError;
+      console.log('Fetched employees:', empData);
 
       // 3. Process and filter by primary roles
       const processedRoster = (empData || [])
@@ -750,6 +748,19 @@ export default function EmployeePortal() {
                     </div>
                     <Plus size={16} className="opacity-50" />
                   </button>
+                  <button
+                    onClick={() => {
+                      setSelectedRequestType('ppe_safety');
+                      setIsRequestModalOpen(true);
+                    }}
+                    className="w-full p-4 bg-white/5 hover:bg-emerald-500 hover:text-black rounded-2xl border border-white/5 flex items-center justify-between transition-all group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-emerald-500 group-hover:text-black"><AlertCircle size={16} /></span>
+                      <span className="text-xs font-bold">Request PPE & Safety</span>
+                    </div>
+                    <Plus size={16} className="opacity-50" />
+                  </button>
                   <SurveyInitiator userId={employee?.id || ''} email={employee?.email || ''} userRole={employee?.role || 'bess_tech'} />
                 </div>
               </div>
@@ -933,8 +944,8 @@ export default function EmployeePortal() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsRequestModalOpen(false)} className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }} className="relative w-full max-w-lg bg-[#0A120F] border border-white/10 rounded-3xl p-8 shadow-2xl">
-              <RequestForm onSuccess={() => setIsRequestModalOpen(false)} />
-              <button onClick={() => setIsRequestModalOpen(false)} className="mt-4 w-full py-4 bg-white/5 text-white font-bold rounded-2xl transition-all">Cancel</button>
+              <RequestForm onSuccess={() => { setIsRequestModalOpen(false); setSelectedRequestType(null); }} defaultRequestType={selectedRequestType || undefined} />
+              <button onClick={() => { setIsRequestModalOpen(false); setSelectedRequestType(null); }} className="mt-4 w-full py-4 bg-white/5 text-white font-bold rounded-2xl transition-all">Cancel</button>
             </motion.div>
           </div>
         )}

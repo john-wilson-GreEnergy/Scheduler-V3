@@ -27,11 +27,11 @@ const getSurveyType = (raterRole: Role, targetRole: Role): SurveyType | null => 
   }
   if (raterRole === 'site_lead') {
     if (targetRole === 'bess_tech') return 'lead_eval_tech';
-    if (targetRole === 'site_manager') return 'tech_eval_manager';
+    if (targetRole === 'site_manager') return 'lead_eval_manager';
   }
   if (raterRole === 'site_manager') {
     if (targetRole === 'bess_tech') return 'manager_eval_tech';
-    if (targetRole === 'site_lead') return 'tech_eval_lead';
+    if (targetRole === 'site_lead') return 'manager_eval_lead';
   }
   return null;
 };

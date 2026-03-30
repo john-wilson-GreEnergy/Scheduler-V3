@@ -1,4 +1,4 @@
-export type SurveyType = 'tech_eval_manager' | 'manager_eval_tech' | 'tech_eval_lead' | 'lead_eval_tech';
+export type SurveyType = 'tech_eval_manager' | 'manager_eval_tech' | 'tech_eval_lead' | 'lead_eval_tech' | 'manager_eval_lead' | 'lead_eval_manager';
 
 export interface SurveyQuestion {
   id: string;

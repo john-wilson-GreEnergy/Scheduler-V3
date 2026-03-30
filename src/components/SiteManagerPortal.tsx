@@ -27,6 +27,8 @@ import { SurveyInitiator } from './SurveyInitiator';
 import { TargetSelectionModal } from './TargetSelectionModal';
 import { AssignmentImporter } from './AssignmentImporter';
 import { IconComponent } from './PortalComponents';
+import { PromotionReadinessTab } from './PromotionReadinessTab';
+import { Award } from 'lucide-react';
 import { isScheduledActive } from '../utils/portal';
 import { format, startOfWeek, addWeeks, parseISO } from 'date-fns';
 import { parseAssignmentNames } from '../utils/assignmentParser';
@@ -466,6 +468,7 @@ export default function SiteManagerPortal() {
       { id: 'roster', label: 'Roster', icon: <Users size={16} />, category: 'Site' },
       { id: 'schedule', label: 'Schedule', icon: <Calendar size={16} />, category: 'Site' },
       { id: 'surveys', label: 'Surveys', icon: <MessageSquare size={16} />, category: 'Management' },
+      { id: 'readiness', label: 'Promotion Readiness', icon: <Award size={16} />, category: 'Management' },
       { id: 'requests', label: `Requests${pendingCount > 0 ? ` (${pendingCount})` : ''}`, icon: <ClipboardList size={16} />, category: 'Management' },
       { id: 'actions', label: 'GreEnergy Links', icon: <Layers size={16} />, category: 'Management' },
       { id: 'completions', label: `Action Completions${pendingCompletions > 0 ? ` (${pendingCompletions})` : ''}`, icon: <CheckCircle2 size={16} />, category: 'Management' },
@@ -822,7 +825,7 @@ export default function SiteManagerPortal() {
                   const visibleWeeks = allWeeks.slice(timelineIndex, timelineIndex + 6);
                   return (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
-                      {visibleWeeks.map((wk) => {
+                      {visibleWeeks.map((wk, index) => {
                         const isCurrent = currentAssignment && wk.id === currentAssignment.id;
                         const weekDate = new Date(wk.week_start + 'T12:00:00');
                         const emp = siteEmployees.find(e => e.id === wk.employee_fk);
@@ -837,7 +840,7 @@ export default function SiteManagerPortal() {
                         const rotationConflict = isScheduledRotation !== isActuallyRotation;
 
                         return (
-                          <div key={wk.id} className={`p-4 rounded-2xl border transition-all relative overflow-hidden ${isCurrent ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/5'}`}>
+                          <div key={`${wk.id}-${wk.week_start}-${index}`} className={`p-4 rounded-2xl border transition-all relative overflow-hidden ${isCurrent ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/5'}`}>
                             {isScheduledRotation && <div className="absolute top-0 right-0 px-2 py-0.5 bg-purple-500/20 text-purple-400 text-[8px] font-bold uppercase rounded-bl-lg">Rotation</div>}
                             <p className="text-[10px] text-gray-500 font-mono mb-1">{weekDate.toLocaleDateString()}</p>
                             <p className={`text-sm font-bold truncate ${rotationConflict ? 'text-amber-400' : 'text-white'}`}>{assignmentName}</p>
@@ -1099,6 +1102,12 @@ export default function SiteManagerPortal() {
         {activeTab === 'surveys' && (
           <motion.div key="surveys" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
             <SurveyReviewTab userRole="manager" userId={employee?.id || ''} />
+          </motion.div>
+        )}
+
+        {activeTab === 'readiness' && (
+          <motion.div key="readiness" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
+            <PromotionReadinessTab />
           </motion.div>
         )}
 

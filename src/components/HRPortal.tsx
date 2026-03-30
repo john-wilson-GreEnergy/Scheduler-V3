@@ -6,14 +6,15 @@ import {
   RefreshCw, MapPin, Users, Calendar, 
   Building2, Search, BarChart3, Info,
   ExternalLink, Map as MapIcon, ShieldCheck, Shield,
-  ArrowUpDown, X
+  ArrowUpDown, X, ChevronLeft, ChevronRight, ClipboardList, AlertCircle
 } from 'lucide-react';
+import RequestsManagement from './RequestsManagement';
 import { motion, AnimatePresence } from 'motion/react';
 import { Employee, Jobsite, AssignmentWeek, RotationConfig, JobsiteGroup } from '../types';
 import PortalLayout from './PortalLayout';
 import MapPortal from './MapPortal';
 import JobsiteInfoCard from './JobsiteInfoCard';
-import { format, startOfWeek } from 'date-fns';
+import { format, startOfWeek, addWeeks, subWeeks } from 'date-fns';
 import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 
 export default function HRPortal() {
@@ -24,12 +25,22 @@ export default function HRPortal() {
   const [jobsiteGroups, setJobsiteGroups] = useState<JobsiteGroup[]>([]);
   const [allEmployees, setAllEmployees] = useState<Employee[]>([]);
   const [assignments, setAssignments] = useState<AssignmentWeek[]>([]);
+  const [availableWeeks, setAvailableWeeks] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [jobsiteSearchQuery, setJobsiteSearchQuery] = useState('');
   const [sortByStaffed, setSortByStaffed] = useState(true);
   const [sortByManpower, setSortByManpower] = useState(true);
   const [selectedJobsite, setSelectedJobsite] = useState<Jobsite | null>(null);
-  const [currentWeekStart] = useState<string>(format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd'));
+  const getMonday = (d: Date) => {
+    const date = new Date(d);
+    const day = date.getUTCDay();
+    const diff = date.getUTCDate() - day + (day === 0 ? -6 : 1);
+    date.setUTCDate(diff);
+    date.setUTCHours(0, 0, 0, 0);
+    return date;
+  };
+
+  const [currentWeekStart, setCurrentWeekStart] = useState<string>(getMonday(new Date()).toISOString().split('T')[0]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -49,6 +60,19 @@ export default function HRPortal() {
         .select('*')
         .eq('is_active', true)
         .order('last_name');
+
+      const { data: weeks } = await supabase
+        .from('assignment_weeks')
+        .select('week_start')
+        .gte('week_start', currentWeekStart)
+        .order('week_start', { ascending: true });
+
+      const distinctWeeks = Array.from(new Set(weeks?.map(w => w.week_start) || []));
+      setAvailableWeeks(distinctWeeks);
+      // Only update if the currentWeekStart is not in the available weeks and we have available weeks
+      if (distinctWeeks.length > 0 && !distinctWeeks.includes(currentWeekStart)) {
+        setCurrentWeekStart(distinctWeeks[0]);
+      }
 
       const currentSchedule = await fetchCurrentScheduleBackend(currentWeekStart);
 
@@ -96,13 +120,32 @@ export default function HRPortal() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [currentWeekStart]);
+
+  const formatDate = (dateString: string, formatStr: string) => {
+    const d = new Date(dateString + 'T00:00:00Z');
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    if (formatStr === 'MMM dd') {
+      return `${months[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2, '0')}`;
+    }
+    if (formatStr === 'MMM dd, yyyy') {
+      return `${months[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2, '0')}, ${d.getUTCFullYear()}`;
+    }
+    return dateString;
+  };
+
+  const changeWeek = (amount: number) => {
+    const nextWeek = addWeeks(new Date(currentWeekStart + 'T00:00:00Z'), amount);
+    setCurrentWeekStart(nextWeek.toISOString().split('T')[0]);
+  };
 
   const tabs = [
     { id: 'overview', label: 'Manpower Overview', icon: <BarChart3 size={16} />, category: 'Global' },
     { id: 'jobsites', label: 'Active Jobsites', icon: <Building2 size={16} />, category: 'Global' },
     { id: 'roster', label: 'Employee Roster', icon: <Users size={16} />, category: 'Global' },
     { id: 'map', label: 'Distribution Map', icon: <MapPin size={16} />, category: 'Global' },
+    { id: 'requests', label: 'General Requests', icon: <ClipboardList size={16} />, category: 'Requests' },
+    { id: 'ppe_requests', label: 'PPE & Safety Requests', icon: <AlertCircle size={16} />, category: 'Requests' },
   ];
 
   const stats = useMemo(() => {
@@ -204,6 +247,7 @@ export default function HRPortal() {
       activeTab={activeTab}
       onTabChange={setActiveTab}
       onRefresh={fetchData}
+      currentWeekStart={currentWeekStart}
     >
       <AnimatePresence mode="wait">
         {/* ── OVERVIEW ── */}
@@ -360,15 +404,28 @@ export default function HRPortal() {
         {/* ── ROSTER ── */}
         {activeTab === 'roster' && (
           <motion.div key="roster" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
-            <div className="relative max-w-md">
-              <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
-              <input
-                type="text"
-                placeholder="Search employees..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
-              />
+            <div className="flex items-center justify-between gap-4">
+              <div className="relative max-w-md flex-1">
+                <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type="text"
+                  placeholder="Search employees..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+                />
+              </div>
+              <div className="flex items-center gap-2 bg-black/40 p-1 rounded-xl border border-white/10">
+                <button onClick={() => changeWeek(-1)} className="p-1.5 hover:bg-white/5 rounded-lg text-gray-400 transition-colors">
+                  <Calendar size={16} className="rotate-180" />
+                </button>
+                <span className="text-white font-mono text-sm px-3 py-1.5">
+                  {formatDate(currentWeekStart, 'MMM dd')} - {formatDate(addWeeks(new Date(currentWeekStart + 'T00:00:00Z'), 1).toISOString().split('T')[0], 'MMM dd, yyyy')}
+                </span>
+                <button onClick={() => changeWeek(1)} className="p-1.5 hover:bg-white/5 rounded-lg text-gray-400 transition-colors">
+                  <Calendar size={16} />
+                </button>
+              </div>
             </div>
 
             <div className="bg-[#0A120F] border border-white/5 rounded-3xl overflow-hidden">
@@ -461,6 +518,20 @@ export default function HRPortal() {
         {activeTab === 'map' && (
           <motion.div key="map" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-[calc(100vh-200px)] rounded-3xl overflow-hidden border border-white/5">
             <MapPortal jobsites={allJobsites} jobsiteGroups={jobsiteGroups} employees={allEmployees} />
+          </motion.div>
+        )}
+
+        {/* ── REQUESTS ── */}
+        {activeTab === 'requests' && (
+          <motion.div key="requests" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <RequestsManagement requestTypeFilter="other" />
+          </motion.div>
+        )}
+
+        {/* ── PPE REQUESTS ── */}
+        {activeTab === 'ppe_requests' && (
+          <motion.div key="ppe_requests" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <RequestsManagement requestTypeFilter="ppe_safety" />
           </motion.div>
         )}
       </AnimatePresence>

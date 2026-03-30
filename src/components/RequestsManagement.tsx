@@ -18,7 +18,7 @@ import { logActivity } from '../lib/logger';
 import { format } from 'date-fns';
 import { sendNotification } from '../utils/notifications';
 
-export default function RequestsManagement({ canApprove = true }: { canApprove?: boolean }) {
+export default function RequestsManagement({ canApprove = true, requestTypeFilter }: { canApprove?: boolean, requestTypeFilter?: 'ppe_safety' | 'other' }) {
   const [requests, setRequests] = useState<PortalRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'denied'>('pending');
@@ -35,10 +35,18 @@ export default function RequestsManagement({ canApprove = true }: { canApprove?:
   const fetchRequests = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('portal_requests')
         .select('*, employee:employees!portal_requests_employee_fk_fkey(*), approver:employees!portal_requests_approver_fk_fkey(*)')
         .order('created_at', { ascending: false });
+
+      if (requestTypeFilter === 'ppe_safety') {
+        query = query.eq('request_type', 'ppe_safety');
+      } else if (requestTypeFilter === 'other') {
+        query = query.neq('request_type', 'ppe_safety');
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       setRequests(data || []);

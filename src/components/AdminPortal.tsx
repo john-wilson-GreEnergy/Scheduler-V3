@@ -23,7 +23,8 @@ import AdminChatView from './AdminChatView';
 import { SurveyReviewTab } from './SurveyReviewTab';
 import DataImporter from './DataImporter';
 import { CsvRotationImporter } from './CsvRotationImporter';
-import { Users, RefreshCw, Map as MapIcon, Calendar, BarChart3, ClipboardList, History, MapPin, LayoutGrid, Layers, TrendingUp, Activity, Megaphone, MessageSquare, Upload } from 'lucide-react';
+import { Users, RefreshCw, Map as MapIcon, Calendar, BarChart3, ClipboardList, History, MapPin, LayoutGrid, Layers, TrendingUp, Activity, Megaphone, MessageSquare, Upload, Award } from 'lucide-react';
+import { PromotionReadinessTab } from './PromotionReadinessTab';
 
 export default function AdminPortal() {
   const IS_SIMULATED = false; // Match AuthContext
@@ -159,6 +160,7 @@ export default function AdminPortal() {
     { id: 'requests', label: 'Requests', icon: <ClipboardList size={16} />, category: 'Management' },
     { id: 'content', label: 'Portal Content', icon: <Megaphone size={16} />, category: 'Management' },
     { id: 'surveys', label: 'Surveys', icon: <MessageSquare size={16} />, category: 'Management' },
+    { id: 'readiness', label: 'Promotion Readiness', icon: <Award size={16} />, category: 'Management' },
 
     { id: 'chatsync', label: 'Chat Sync', icon: <MessageSquare size={16} />, category: 'System' },
     { id: 'importer', label: 'Data Import', icon: <Upload size={16} />, category: 'System' },
@@ -186,14 +188,15 @@ export default function AdminPortal() {
       case 'jobsites': return <JobsiteManager jobsites={jobsites} onUpdate={fetchData} />;
       case 'groups': return <GroupManager jobsites={jobsites} jobsiteGroups={jobsiteGroups} employees={employees} onUpdate={fetchData} />;
       case 'group-assignment': return <GroupAssignmentTool jobsites={jobsites} jobsiteGroups={jobsiteGroups} employees={employees} onUpdate={fetchData} />;
-      case 'requests': return <RequestsManagement />;
+      case 'requests': return <RequestsManagement requestTypeFilter="other" />;
       case 'content': return <PortalContentManager />;
       case 'surveys': return <SurveyReviewTab userRole="admin" userId="all" />;
+      case 'readiness': return <PromotionReadinessTab />;
       case 'analytics': return <Analytics employees={employees} jobsites={jobsites} />;
       case 'forecast': return <LogisticsForecast employees={employees} jobsites={jobsites} jobsiteGroups={jobsiteGroups} />;
       case 'health': return <DataHealth employees={employees} jobsites={jobsites} />;
       case 'chatsync': return <ChatSyncManager />;
-      case 'importer': return <DataImporter employees={employees} jobsites={jobsites} />;
+      case 'importer': return <DataImporter employees={employees} jobsites={jobsites} jobsiteGroups={jobsiteGroups} />;
       case 'rotation-importer': return <CsvRotationImporter onImportSuccess={fetchData} />;
       case 'logs': return <SystemLogs />;
       default: return null;

@@ -143,7 +143,7 @@ export interface SiteEmployee extends Employee {
 export interface PortalRequest {
   id: string;
   employee_fk: string;
-  request_type: 'vacation' | 'time_off' | 'rotation_change' | 'jobsite_change' | 'other';
+  request_type: 'vacation' | 'time_off' | 'rotation_change' | 'jobsite_change' | 'ppe_safety' | 'other';
   status: 'pending' | 'approved' | 'denied';
   details: string;
   start_date?: string;

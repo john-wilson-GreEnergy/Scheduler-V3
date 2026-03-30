@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { Resend } from "resend";
 import dotenv from "dotenv";
+import promotionRoutes from "./server/routes/promotion.ts";
 
 dotenv.config();
 
@@ -25,6 +26,8 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  app.use("/api", promotionRoutes);
 
   // API routes
   app.post("/api/send-email", async (req, res) => {

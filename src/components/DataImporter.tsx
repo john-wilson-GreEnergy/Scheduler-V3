@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Employee, Jobsite } from '../types';
+import { Employee, Jobsite, JobsiteGroup } from '../types';
 import Papa from 'papaparse';
 import { Upload, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface DataImporterProps {
   employees: Employee[];
   jobsites: Jobsite[];
+  jobsiteGroups: JobsiteGroup[];
 }
 
-export default function DataImporter({ employees, jobsites }: DataImporterProps) {
+export default function DataImporter({ employees, jobsites, jobsiteGroups }: DataImporterProps) {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
@@ -33,28 +34,22 @@ export default function DataImporter({ employees, jobsites }: DataImporterProps)
           const rows = results.data as string[][];
           console.log('Parsed rows:', rows.length);
           
-          if (rows.length < 5) throw new Error('CSV does not have enough rows.');
+          if (rows.length < 6) throw new Error('CSV does not have enough rows.');
           
-          const dateHeaderRow = rows[4];
-          // Find the index where the dates actually start.
-          // Based on the screenshot, dates start after "Week #" column.
-          // Let's find the first column that looks like a date (contains '/')
-          const dateStartIndex = dateHeaderRow.findIndex(cell => cell && cell.includes('/'));
-          if (dateStartIndex === -1) throw new Error('Could not find date headers.');
-          
+          const dateHeaderRow = rows[4]; // Row 5
+          // Dates start at Column H (index 7)
+          const dateStartIndex = 7;
           const dateHeaders = dateHeaderRow.slice(dateStartIndex);
           console.log('Date headers found starting at index:', dateStartIndex, 'Count:', dateHeaders.length);
           
-          const assignmentsList: any[] = [];
-
           for (let i = 5; i < rows.length; i++) {
             const row = rows[i];
-            const fullName = row[4]; // Column E
-            if (!fullName) continue;
+            const email = row[4]; // Column E
+            if (!email) continue;
 
-            const employee = employees.find(e => `${e.first_name} ${e.last_name}`.toLowerCase() === fullName.trim().toLowerCase());
+            const employee = employees.find(e => e.email.toLowerCase() === email.trim().toLowerCase());
             if (!employee) {
-              console.warn(`Employee not found: '${fullName}'`);
+              console.warn(`Employee not found: '${email}'`);
               continue;
             }
 
@@ -62,43 +57,23 @@ export default function DataImporter({ employees, jobsites }: DataImporterProps)
               const dateStr = dateHeaders[j];
               const assignmentValue = row[dateStartIndex + j];
               
-              if (!assignmentValue || assignmentValue === '-' || assignmentValue === 'Rotation') continue;
+              if (!assignmentValue || assignmentValue.trim() === '-' || assignmentValue.trim() === '') continue;
 
               // Parse date (MM/DD/YY)
               const parts = dateStr.split('/');
-              if (parts.length !== 3) {
-                continue;
-              }
+              if (parts.length !== 3) continue;
               const [m, d, y] = parts;
-              const dateObj = new Date(2000 + parseInt(y), parseInt(m) - 1, parseInt(d));
-              
-              // Ensure it's a Monday (getDay() returns 1 for Monday)
-              if (dateObj.getDay() !== 1) {
-                console.warn(`Skipping assignment for date ${dateStr} as it is not a Monday.`);
-                continue;
-              }
-              
               const weekStart = `20${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
 
-              // Handle dual assignments (e.g., "El Sol/Sunstreams")
-              const assignmentValueTrimmed = assignmentValue.trim();
-              const normalizedAssignmentValue = assignmentValueTrimmed.replace(/vacay/gi, 'Vacation');
-              if (!normalizedAssignmentValue || normalizedAssignmentValue === '-') continue;
-              
-              // Robustness check: skip if it looks like an employee name
-              if (employees.some(e => `${e.first_name} ${e.last_name}`.toLowerCase() === normalizedAssignmentValue.toLowerCase())) {
-                console.warn(`Skipping assignment as it looks like an employee name: '${normalizedAssignmentValue}'`);
-                continue;
-              }
-
-              const assignmentParts = normalizedAssignmentValue.split('/');
+              // Handle assignments (split by /)
+              const assignmentParts = assignmentValue.split('/').map(p => p.trim());
               
               // Insert/Update assignment_weeks
               const weekAssignment = {
                 employee_fk: employee.id,
                 week_start: weekStart,
                 status: 'assigned',
-                assignment_type: assignmentParts[0].trim()
+                assignment_type: 'rotation'
               };
 
               // Find or create assignment_week
@@ -126,41 +101,39 @@ export default function DataImporter({ employees, jobsites }: DataImporterProps)
               }
 
               // Insert/Update assignment_items
-              // Clear existing items for this week to avoid duplicates
               await supabase.from('assignment_items').delete().eq('assignment_week_fk', weekId);
 
-              for (let k = 0; k < assignmentParts.length; k++) {
-                const part = assignmentParts[k].trim();
+              for (const part of assignmentParts) {
+                // Resolve jobsite or group
+                let targetJobsites: Jobsite[] = [];
                 
-                // Try to find the jobsite ID
-                const jobsite = jobsites.find(j => 
-                  j.jobsite_name.toLowerCase() === part.toLowerCase() ||
-                  j.jobsite_alias?.toLowerCase() === part.toLowerCase()
-                );
-
-                if (!jobsite) {
-                  console.warn(`Jobsite not found for name: '${part}'`);
-                  // We still insert it but without a jobsite_fk if the schema allows, 
-                  // but based on types.ts it should have a jobsite_fk.
-                  // If we don't have a jobsite_fk, we might skip it or use a placeholder.
-                  continue; 
-                }
-
-                let days;
-                if (assignmentParts.length === 1) {
-                  days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                // Check if part is a group
+                const group = jobsiteGroups.find(g => g.name.toLowerCase() === part.toLowerCase());
+                if (group) {
+                  targetJobsites = jobsites.filter(j => j.group_id === group.id || j.jobsite_group === group.name);
                 } else {
-                  days = k === 0 ? ['Mon', 'Tue', 'Wed'] : ['Thu', 'Fri', 'Sat', 'Sun'];
+                  // Check if part is a jobsite
+                  const jobsite = jobsites.find(j => 
+                    j.jobsite_name.toLowerCase() === part.toLowerCase() ||
+                    j.jobsite_alias?.toLowerCase() === part.toLowerCase()
+                  );
+                  if (jobsite) targetJobsites = [jobsite];
                 }
-                
-                const { error: insertItemError } = await supabase
-                  .from('assignment_items')
-                  .insert({
-                    assignment_week_fk: weekId,
-                    jobsite_fk: jobsite.id,
-                    days: days
-                  });
-                if (insertItemError) throw insertItemError;
+
+                if (targetJobsites.length === 0) {
+                  console.warn(`Jobsite/Group not found for: '${part}'`);
+                  continue;
+                }
+
+                for (const jobsite of targetJobsites) {
+                  await supabase
+                    .from('assignment_items')
+                    .insert({
+                      assignment_week_fk: weekId,
+                      jobsite_fk: jobsite.id,
+                      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] // Default to all days
+                    });
+                }
               }
             }
           }
@@ -175,6 +148,7 @@ export default function DataImporter({ employees, jobsites }: DataImporterProps)
       }
     });
   };
+
 
   return (
     <div className="bg-[#0A120F] border border-emerald-900/30 rounded-3xl p-6">

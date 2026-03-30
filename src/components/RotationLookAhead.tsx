@@ -396,16 +396,17 @@ export default function RotationLookAhead({ employees }: RotationLookAheadProps)
                       const item = a.assignment_items && a.assignment_items[0];
                       const type = item?.assignment_type?.toLowerCase();
                       const status = a.status?.toLowerCase();
-                      
+                      const weekAssignmentType = a.assignment_type?.toLowerCase();
+
                       // Check for rotation
-                      if (status === 'rotation' || type === 'rotation') return 'R';
+                      if (status === 'rotation' || type === 'rotation' || weekAssignmentType === 'rotation') return 'R';
                       // Check for vacation
-                      if (status === 'vacation' || type === 'vacation') return 'V';
+                      if (status === 'vacation' || type === 'vacation' || weekAssignmentType === 'vacation') return 'V';
                       // Check for personal
-                      if (status === 'personal' || type === 'personal') return 'P';
+                      if (status === 'personal' || type === 'personal' || weekAssignmentType === 'personal') return 'P';
                       
                       // If it's a jobsite (and not one of the above), return lightning
-                      if (type) return '⚡';
+                      if (item?.jobsite_fk) return '⚡';
                       
                       return 'X';
                     });

@@ -1,4 +1,11 @@
-import { Wrench, Truck, Car, AlertTriangle, Camera, Plane, ShieldCheck, HeartHandshake, DollarSign, FileCheck, Construction, HardHat, Info } from 'lucide-react';
+import { Wrench, Truck, Car, AlertTriangle, Camera, Plane, ShieldCheck, HeartHandshake, DollarSign, FileCheck, Construction, HardHat, Info, Link, Megaphone, ClipboardCheck, ExternalLink, Globe, Calendar, User, Settings, Zap } from 'lucide-react';
+
+export const AVAILABLE_ICONS = [
+  'Wrench', 'Truck', 'Car', 'AlertTriangle', 'Camera', 'Plane', 'ShieldCheck', 
+  'HeartHandshake', 'DollarSign', 'FileCheck', 'Construction', 'HardHat', 
+  'Link', 'Megaphone', 'ClipboardCheck', 'ExternalLink', 'Globe', 'Calendar', 
+  'User', 'Settings', 'Zap', 'Info'
+];
 
 export const IconComponent = ({ name, className }: { name: string, className?: string }) => {
   switch (name) {
@@ -14,6 +21,15 @@ export const IconComponent = ({ name, className }: { name: string, className?: s
     case 'FileCheck': return <FileCheck className={className} />;
     case 'Construction': return <Construction className={className} />;
     case 'HardHat': return <HardHat className={className} />;
+    case 'Link': return <Link className={className} />;
+    case 'Megaphone': return <Megaphone className={className} />;
+    case 'ClipboardCheck': return <ClipboardCheck className={className} />;
+    case 'ExternalLink': return <ExternalLink className={className} />;
+    case 'Globe': return <Globe className={className} />;
+    case 'Calendar': return <Calendar className={className} />;
+    case 'User': return <User className={className} />;
+    case 'Settings': return <Settings className={className} />;
+    case 'Zap': return <Zap className={className} />;
     default: return <Info className={className} />;
   }
 };

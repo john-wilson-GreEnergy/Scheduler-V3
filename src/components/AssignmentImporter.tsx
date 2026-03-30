@@ -46,7 +46,8 @@ export const AssignmentImporter: React.FC<{ onImportComplete?: () => void }> = (
     setLoading(true);
     try {
       const { data: employees } = await supabase.from('employees').select('id, first_name, last_name, email');
-      const { data: jobsites } = await supabase.from('jobsites').select('id, jobsite_name');
+      const { data: jobsites } = await supabase.from('jobsites').select('id, jobsite_name, group_id, jobsite_group, jobsite_alias');
+      const { data: jobsiteGroups } = await supabase.from('jobsite_groups').select('id, name');
 
       // Mapping objects for normalization
       const NAME_MAPPING: Record<string, string> = {
@@ -94,11 +95,21 @@ export const AssignmentImporter: React.FC<{ onImportComplete?: () => void }> = (
         "Ravenswood/ Oak Hill": "Ravenswood",
         "Countryside/ Ravenswood": "Countryside",
         "Countryside/Ravenswood": "Countryside",
-        "KCE/ Ravenswood": "KCE"
+        "KCE/ Ravenswood": "KCE",
+        "CC7": "CC7",
+        "Idaho Power and AZ Roofs": "Idaho Power",
+        "Portland": "Portland",
+        "WESR": "WESR",
+        "Sungrow Training": "Sungrow Training",
+        "Big Beau": "Big Beau",
+        "LG Atlas": "LG Atlas",
+        "LG ACIR": "LG ACIR",
+        "TRAVEL": "Travel",
+        "Notifier Training Connecticut": "Notifier Training Connecticut"
       };
 
       const dateRow = preview[4]; // Row 5
-      const dataRows = preview.slice(5, 81); // Rows 6 to 81
+      const dataRows = preview.slice(5, 66); // Rows 6 to 66
 
       const plannedAssignments: any[] = [];
 
@@ -116,33 +127,63 @@ export const AssignmentImporter: React.FC<{ onImportComplete?: () => void }> = (
           continue;
         }
 
-        for (let i = 6; i < row.length; i++) { // Column G onwards
-          const assignmentName = row[i];
-          if (!assignmentName || assignmentName === '-') continue;
+        for (let i = 7; i < row.length; i++) { // Column H onwards
+          const cellValue = row[i];
+          if (!cellValue || cellValue === '-') continue;
 
           const weekStart = dateRow[i];
           if (!weekStart) continue;
 
-          const normalizedJobsite = JOB_SITE_MAPPING[assignmentName] || assignmentName;
-          const jobsite = jobsites?.find(j => j.jobsite_name === normalizedJobsite);
+          // Split by '/' or ',' or 'and' and trim, and replace newlines with spaces
+          const assignmentNames = cellValue.replace(/\n/g, ' ').split(/[\/,]|and/i).map((s: string) => s.trim()).filter(Boolean);
 
-          if (jobsite) {
-            plannedAssignments.push({
-              employee_fk: employee.id,
-              week_start: new Date(weekStart).toISOString().split('T')[0],
-              assignment_type: jobsite.jobsite_name,
-              target_jobsites: [{
-                jobsite_fk: jobsite.id,
-                days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-              }]
-            });
-          } else {
-            console.warn(`Jobsite not found: ${assignmentName} (Normalized: ${normalizedJobsite})`);
+          for (const assignmentName of assignmentNames) {
+            const normalizedJobsite = JOB_SITE_MAPPING[assignmentName] || assignmentName;
+            
+            // Check if it's a group (by name or group_id)
+            const group = jobsiteGroups?.find(g => g.name.toLowerCase() === normalizedJobsite.toLowerCase());
+            
+            let foundJobsites: any[] = [];
+            if (group) {
+                foundJobsites = jobsites?.filter(j => j.group_id === group.id) || [];
+            } else {
+                // Try matching by jobsite_name, jobsite_group, or jobsite_alias
+                foundJobsites = jobsites?.filter(j => 
+                    j.jobsite_name.toLowerCase() === normalizedJobsite.toLowerCase() ||
+                    (j.jobsite_group && j.jobsite_group.toLowerCase() === normalizedJobsite.toLowerCase()) ||
+                    (j.jobsite_alias && j.jobsite_alias.toLowerCase() === normalizedJobsite.toLowerCase())
+                ) || [];
+            }
+
+            for (const jobsite of foundJobsites) {
+                // Safer date parsing
+                const parsedDate = new Date(weekStart);
+                if (isNaN(parsedDate.getTime())) {
+                    console.warn(`Invalid date: ${weekStart}`);
+                    continue;
+                }
+                const isoDate = parsedDate.toISOString().split('T')[0];
+
+                plannedAssignments.push({
+                  employee_fk: employee.id,
+                  week_start: isoDate,
+                  assignment_type: jobsite.jobsite_name,
+                  target_jobsites: [{
+                    jobsite_fk: jobsite.id,
+                    week_start: isoDate,
+                    days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                  }]
+                });
+            }
+            if (foundJobsites.length === 0) {
+                console.warn(`Jobsite/Group not found: ${assignmentName} (Normalized: ${normalizedJobsite})`);
+            }
           }
         }
       }
 
       // Call the SQL RPC function
+      console.log('Sending assignments to RPC:', JSON.stringify(plannedAssignments, null, 2));
       const { error: rpcError } = await supabase
         .rpc('import_assignments', { assignment_data: plannedAssignments });
       

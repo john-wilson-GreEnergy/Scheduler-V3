@@ -4,9 +4,9 @@ import { useAuth } from '../contexts/AuthContext';
 import { format, startOfWeek } from 'date-fns';
 import { AssignmentWeek } from '../types';
 
-export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
+export function RequestForm({ onSuccess, defaultRequestType }: { onSuccess?: () => void, defaultRequestType?: 'vacation' | 'time_off' | 'rotation_change' | 'jobsite_change' | 'ppe_safety' }) {
   const { employee } = useAuth();
-  const [requestType, setRequestType] = useState<'vacation' | 'time_off' | 'rotation_change' | 'jobsite_change'>('vacation');
+  const [requestType, setRequestType] = useState<'vacation' | 'time_off' | 'rotation_change' | 'jobsite_change' | 'ppe_safety'>(defaultRequestType || 'vacation');
   const [details, setDetails] = useState('');
   const [selectedWeek, setSelectedWeek] = useState('');
   const [targetWeek, setTargetWeek] = useState('');
@@ -104,6 +104,7 @@ export function RequestForm({ onSuccess }: { onSuccess?: () => void }) {
           <option value="time_off">Time Off</option>
           <option value="rotation_change">Rotation Change</option>
           <option value="jobsite_change">Jobsite Change</option>
+          <option value="ppe_safety">PPE & Safety</option>
         </select>
       </div>
 

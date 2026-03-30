@@ -61,6 +61,8 @@ CREATE POLICY "BESS Tech read own assignment_weeks" ON public.assignment_weeks
     SELECT 1 FROM public.employees e
     WHERE e.id = assignment_weeks.employee_fk
     AND e.auth_user_id = auth.uid()
+  ));
+
 -- Policies for assignment_items table
 CREATE POLICY "Admin/Super Admin full access on assignment_items" ON public.assignment_items
   FOR ALL TO authenticated
@@ -95,3 +97,15 @@ CREATE POLICY "BESS Tech full access own portal_requests" ON public.portal_reque
     WHERE e.id = portal_requests.employee_fk
     AND e.auth_user_id = auth.uid()
   ));
+
+-- Policies for announcements table
+ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Admin/Super Admin full access on announcements" ON public.announcements
+  FOR ALL TO authenticated
+  USING (get_user_role(auth.uid()) IN ('admin', 'super_admin'))
+  WITH CHECK (get_user_role(auth.uid()) IN ('admin', 'super_admin'));
+
+CREATE POLICY "Authenticated users read announcements" ON public.announcements
+  FOR SELECT TO authenticated
+  USING (true);

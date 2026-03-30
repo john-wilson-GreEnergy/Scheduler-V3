@@ -26,7 +26,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { format, addDays, startOfWeek } from 'date-fns';
 import { toast } from 'sonner';
-import { IconComponent } from './PortalComponents';
+import { AVAILABLE_ICONS, IconComponent } from './PortalComponents';
 
 export default function PortalContentManager() {
   const [activeTab, setActiveTab] = useState<'all' | 'announcements' | 'required_actions' | 'greenergy_links'>('all');
@@ -755,14 +755,16 @@ export default function PortalContentManager() {
                         <h4 className="text-[10px] font-bold text-blue-500 uppercase tracking-widest border-b border-white/5 pb-2">Type & Visuals</h4>
                         <div className="grid grid-cols-2 gap-4">
                           <div className="space-y-2">
-                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Icon Name (Lucide)</label>
-                            <input 
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Icon</label>
+                            <select 
                               name="icon"
-                              type="text"
                               defaultValue={editingItem?.icon || (activeTab === 'required_actions' ? 'ClipboardCheck' : 'Link')}
-                              placeholder="e.g. ExternalLink, Globe..."
-                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                            />
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
+                            >
+                              {AVAILABLE_ICONS.map(iconName => (
+                                <option key={iconName} value={iconName}>{iconName}</option>
+                              ))}
+                            </select>
                           </div>
                           <div className="space-y-2">
                             <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Category</label>

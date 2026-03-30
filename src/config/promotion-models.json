@@ -1,0 +1,117 @@
+{
+  "promotionModels": [
+    {
+      "id": "technician_to_site_lead",
+      "fromRole": "technician",
+      "toRole": "site_lead",
+      "sources": [
+        {
+          "surveyId": "sitelead_to_technician_v1",
+          "weight": 0.45
+        },
+        {
+          "surveyId": "manager_to_technician_v2",
+          "weight": 0.35
+        },
+        {
+          "surveyId": "technician_to_sitelead_v1",
+          "weight": 0.2,
+          "direction": "reverse_signal_for_candidate_context"
+        }
+      ],
+      "categories": [
+        {
+          "key": "workEthicReliability",
+          "label": "Work Ethic & Reliability",
+          "weight": 0.2
+        },
+        {
+          "key": "technicalExecution",
+          "label": "Technical Execution",
+          "weight": 0.2
+        },
+        {
+          "key": "safety",
+          "label": "Safety",
+          "weight": 0.2
+        },
+        {
+          "key": "teamworkCommunication",
+          "label": "Teamwork & Communication",
+          "weight": 0.2
+        },
+        {
+          "key": "leadershipIndicators",
+          "label": "Leadership Indicators",
+          "weight": 0.2
+        }
+      ],
+      "thresholds": {
+        "readyNow": 85,
+        "readySoon": 75,
+        "developing": 65,
+        "needsImprovement": 50
+      },
+      "gates": {
+        "minimumSafetyScore": 4.5,
+        "minimumRecentResponses": 3
+      }
+    },
+    {
+      "id": "site_lead_to_site_manager",
+      "fromRole": "site_lead",
+      "toRole": "site_manager",
+      "sources": [
+        {
+          "surveyId": "manager_to_sitelead_v1",
+          "weight": 0.45
+        },
+        {
+          "surveyId": "technician_to_sitelead_v1",
+          "weight": 0.25
+        },
+        {
+          "surveyId": "sitelead_to_manager_v1",
+          "weight": 0.3
+        }
+      ],
+      "categories": [
+        {
+          "key": "leadershipDirection",
+          "label": "Leadership & Direction",
+          "weight": 0.25
+        },
+        {
+          "key": "communicationAlignment",
+          "label": "Communication & Alignment",
+          "weight": 0.2
+        },
+        {
+          "key": "operationalExecution",
+          "label": "Operational Execution",
+          "weight": 0.2
+        },
+        {
+          "key": "safetyLeadership",
+          "label": "Safety Leadership",
+          "weight": 0.2
+        },
+        {
+          "key": "accountabilityReliability",
+          "label": "Accountability & Reliability",
+          "weight": 0.15
+        }
+      ],
+      "thresholds": {
+        "readyNow": 88,
+        "readySoon": 78,
+        "developing": 68,
+        "needsImprovement": 55
+      },
+      "gates": {
+        "minimumSafetyScore": 5.0,
+        "minimumRecentResponses": 3
+      }
+    }
+  ]
+}

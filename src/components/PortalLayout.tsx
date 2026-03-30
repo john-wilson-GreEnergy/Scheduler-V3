@@ -17,6 +17,7 @@ interface PortalLayoutProps {
   onTabChange: (tab: any) => void;
   lastUpdated?: string;
   onRefresh?: () => void;
+  currentWeekStart?: string;
 }
 
 export default function PortalLayout({ 
@@ -26,9 +27,18 @@ export default function PortalLayout({
   activeTab, 
   onTabChange,
   lastUpdated,
-  onRefresh
+  onRefresh,
+  currentWeekStart
 }: PortalLayoutProps) {
   const { user, employee, isAdmin, isSuperAdmin, isSiteManager, isSiteLead, isHR, handleLogout } = useAuth();
+  const getMonday = (d: Date) => {
+    const date = new Date(d);
+    const day = date.getUTCDay();
+    const diff = date.getUTCDate() - day + (day === 0 ? -6 : 1);
+    date.setUTCDate(diff);
+    date.setUTCHours(0, 0, 0, 0);
+    return date;
+  };
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
@@ -460,7 +470,7 @@ export default function PortalLayout({
               <div className="text-right">
                 <p className="text-[9px] text-gray-600 uppercase font-black tracking-widest">Week Starting</p>
                 <p className="text-xs font-mono text-emerald-500">
-                  {format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd')}
+                  {currentWeekStart ? format(new Date(currentWeekStart), 'MM/dd/yy') : format(getMonday(new Date()), 'MM/dd/yy')}
                 </p>
               </div>
             </div>
