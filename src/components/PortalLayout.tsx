@@ -7,10 +7,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { format, startOfWeek } from 'date-fns';
 import NotificationPanel from './NotificationPanel';
 import CommandPalette from './CommandPalette';
-import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
-import { haptics } from '../services/hapticsService';
-import { Capacitor } from '@capacitor/core';
-import { StatusBar, Style } from '@capacitor/status-bar';
+import { haptics, NotificationType } from '../services/hapticsService';
 
 interface PortalLayoutProps {
   children: React.ReactNode;
@@ -97,10 +94,7 @@ export default function PortalLayout({
   }, [location.pathname, activeTab]);
 
   useEffect(() => {
-    if (Capacitor.isNativePlatform()) {
-      StatusBar.setStyle({ style: Style.Dark });
-      StatusBar.setBackgroundColor({ color: '#050A08' });
-    }
+    // Standard web setup
   }, []);
 
   const categories = Array.from(new Set(tabs.map(t => t.category || 'General')));
@@ -248,7 +242,7 @@ export default function PortalLayout({
 
         <button 
           onClick={() => {
-            haptics.notification(NotificationType.Warning);
+            haptics.notification({ type: NotificationType.Warning });
             handleLogout();
           }}
           className="w-full flex items-center gap-3 px-4 py-2.5 text-gray-500 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all text-sm font-bold active-scale"
@@ -504,7 +498,7 @@ export default function PortalLayout({
               {employee?.first_name?.[0] || user?.email?.[0]?.toUpperCase() || 'U'}
             </button>
             
-            {!Capacitor.isNativePlatform() && (
+            {true && (
               <button 
                 onClick={() => window.open(window.location.origin, '_blank')}
                 className="hidden sm:flex px-4 py-2 bg-emerald-500 text-black rounded-xl text-xs font-bold hover:bg-emerald-400 transition-all items-center gap-2"
@@ -751,7 +745,7 @@ export default function PortalLayout({
 
             <button 
               onClick={() => {
-                haptics.notification(NotificationType.Warning);
+                haptics.notification({ type: NotificationType.Warning });
                 handleLogout();
                 setIsProfileOpen(false);
               }}

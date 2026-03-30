@@ -15,7 +15,6 @@ import {
 } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { format, startOfWeek, addWeeks, isSameWeek } from 'date-fns';
-import { assignEmployeeToJobsiteBackend, fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { Users, MapPin, Calendar, AlertTriangle, CheckCircle2, RefreshCw, ChevronRight, Filter, Download, Bell } from 'lucide-react';
 import AssignmentModal from './AssignmentModal';
@@ -222,11 +221,19 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
     try {
       const weekStr = format(currentWeek, 'yyyy-MM-dd');
       
-      // 1. Fetch current schedule from backend view
-      const scheduleData = await fetchCurrentScheduleBackend(weekStr);
-      console.log('Scheduler: scheduleData from view:', scheduleData);
+      // Fetch assignments for the current week from assignment_weeks table
+      const { data: weeksData, error: weeksError } = await supabase
+        .from('assignment_weeks')
+        .select('*, items:assignment_items(*)')
+        .eq('week_start', weekStr);
 
-      // 2. Fetch rotation configs
+      console.log('Scheduler: weeksData:', weeksData);
+      if (weeksError) console.error('Error fetching assignment_weeks:', weeksError);
+      
+      // Process all assignments
+      const allWeeksData = weeksData || [];
+
+      // Fetch rotation configs
       const { data: rotData } = await supabase
         .from('rotation_configs')
         .select('*');
@@ -240,31 +247,112 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
       const mapped: ScheduledAssignment[] = [];
       const seen = new Set<string>();
 
-      scheduleData.forEach((row: any) => {
-        // Skip inactive employees (view already filters, but being safe)
-        if (!row.employee_fk) return;
+      const processWeek = (week: any) => {
+        // Match by employee_fk
+        const employee = employees.find(e => e.id === week.employee_fk);
+        
+        if (!employee || !employee.is_active) {
+          return;
+        }
 
-        // Robustly determine assignment type if missing
-        const effectiveAssignmentType = row.assignment_type || row.jobsite_name || 'Unassigned';
+        // Use a more granular key to allow multiple assignments per employee per week
+        // We will handle duplicate prevention at the assignment level
+        if (week.items && week.items.length > 0) {
+          week.items.forEach((item: any) => {
+            if (item.jobsite_fk) {
+              const key = `${employee.id}-${week.week_start}-${item.jobsite_fk}`;
+              if (!seen.has(key)) {
+                mapped.push({
+                  employeeId: employee.id,
+                  jobsiteId: item.jobsite_fk,
+                  weekStart: week.week_start,
+                  days: item.days,
+                  status: week.status || 'assigned'
+                });
+                seen.add(key);
+              }
+            }
+          });
+        } else if (week.assignment_name === 'Rotation' || week.assignment_name === 'Vacation' || week.assignment_name === 'Personal') {
+          const key = `${employee.id}-${week.week_start}-${week.assignment_name.toLowerCase()}`;
+          mapped.push({
+            employeeId: employee.id,
+            jobsiteId: week.assignment_name.toLowerCase(),
+            weekStart: week.week_start,
+            isRotation: week.assignment_name === 'Rotation',
+            status: week.status || 'assigned'
+          });
+          seen.add(key);
+        }
+        
+        if (week.assignment_name) {
+          const assignmentNames = parseAssignmentNames(week.assignment_name);
+          
+          assignmentNames.forEach(name => {
+            const trimmedName = name.trim().toLowerCase();
+            
+            // Fallback to assignment_name matching jobsite_name OR group name
+            const jobsite = jobsites.find(j => 
+              j.jobsite_name.toLowerCase() === trimmedName ||
+              j.jobsite_alias?.toLowerCase() === trimmedName ||
+              (j.group_id && getGroupName(j.group_id)?.toLowerCase() === trimmedName)
+            );
+            
+            // If it's a group assignment, get all sites in the group
+            const group = jobsite?.group_id ? jobsiteGroups.find(g => g.id === jobsite.group_id) : null;
+            const sitesInGroup = group ? jobsites.filter(j => j.group_id === group.id) : [];
+            
+            // Try to find days in items
+            // If group assignment, check if i.jobsite_fk is in sitesInGroup
+            // Otherwise, check if i.jobsite_fk === jobsite.id
+            const items = week.items?.filter((i: any) => 
+              (group && sitesInGroup.some(s => s.id === i.jobsite_fk)) ||
+              (jobsite && i.jobsite_fk === jobsite.id)
+            );
+            
+            // Combine days from all items, fallback to week.days if items have no days
+            const itemDays = items && items.length > 0 
+              ? Array.from(new Set(items.flatMap((i: any) => i.days || []))) 
+              : undefined;
+            
+            const days = (itemDays && itemDays.length > 0) ? itemDays : week.days;
+            
+            const key = `${employee.id}-${week.week_start}-${group ? `group-${group.id}` : (jobsite ? jobsite.id : trimmedName)}`;
+            if (seen.has(key)) return;
+            
+            if (jobsite) {
+              mapped.push({
+                employeeId: employee.id,
+                jobsiteId: jobsite.id,
+                weekStart: week.week_start,
+                days: days,
+                status: 'assigned'
+              });
+              seen.add(key);
+            } else {
+              // Even if jobsite not found in table, track it as a named assignment
+              // This helps visibility in other views
+              mapped.push({
+                employeeId: employee.id,
+                jobsiteId: `unmapped-${name.trim()}`,
+                weekStart: week.week_start,
+                days: days,
+                status: 'assigned'
+              });
+              seen.add(key);
+            }
+          });
+        }
+      };
 
-        const key = `${row.employee_fk}-${row.week_start}-${row.jobsite_id || effectiveAssignmentType}`;
-        if (seen.has(key)) return;
-
-        mapped.push({
-          employeeId: row.employee_fk,
-          jobsiteId: row.jobsite_id || effectiveAssignmentType.toLowerCase(),
-          weekStart: row.week_start,
-          isRotation: row.value_type === 'rotation' || effectiveAssignmentType.toLowerCase() === 'rotation',
-          days: row.days,
-          status: row.status || 'assigned'
-        });
-        seen.add(key);
-      });
-
+      allWeeksData.forEach(processWeek);
+      
       setAssignments(mapped);
-      setInitialAssignments(mapped);
+      if (initialAssignments === null) {
+        setInitialAssignments(mapped);
+      }
     } catch (err) {
-      console.error('Error fetching data:', err);
+      console.error('Error fetching scheduler data:', err);
     } finally {
       setLoading(false);
     }
@@ -280,31 +368,138 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
         console.error('executeAssignment called with missing targetDisplaySite');
         return;
       }
+      const jobsite = jobsites.find(j => j.id === actualJobsiteId);
+      const employee = employees.find(e => e.id === employeeId);
       
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!jobsite || !employee) {
+          console.error('Jobsite or employee not found:', { jobsite, employee });
+          return;
+      }
 
+      // Get admin email
+      const { data: { user } } = await supabase.auth.getUser();
+      const adminEmail = user?.email || 'Unknown';
+
+      // 1. Update local state
+      const newAssignment = {
+        employeeId,
+        jobsiteId: actualJobsiteId,
+        weekStart: weekStr
+      };
+      
       const previousAssignments = assignments;
       setHistory(prev => [...prev, assignments]);
       setAssignments(prev => [
         ...prev.filter(a => a.employeeId !== employeeId || a.weekStart !== weekStr), 
-        { employeeId, jobsiteId: actualJobsiteId, weekStart: weekStr }
+        newAssignment
       ]);
 
+        // 2. Save to Supabase
       try {
-        await assignEmployeeToJobsiteBackend(employeeId, actualJobsiteId, weekStr, user.id);
-        console.log('Backend assignment success');
+        const isAssignmentSpecial = actualJobsiteId === 'rotation' || actualJobsiteId === 'vacation' || actualJobsiteId === 'time off';
+        const payload = {
+            employee_fk: employee.id,
+            week_start: weekStr,
+            status: isAssignmentSpecial ? actualJobsiteId : 'assigned',
+        };
+        console.log('Upserting assignment payload:', JSON.stringify(payload, null, 2));
         
-        // Log the activity
+        // 1. Check if assignment already exists
+        await supabase.rpc('set_audit_reason', { reason: 'scheduler_drag_drop' });
+        const { data: existingAssignments, error: fetchError } = await supabase
+          .from('assignment_weeks')
+          .select('*')
+          .eq('employee_fk', employee.id)
+          .eq('week_start', weekStr);
+        
+        if (fetchError) throw fetchError;
+
+        let assignmentWeek;
+
+        if (existingAssignments && existingAssignments.length > 0) {
+            // Take the first one to update
+            assignmentWeek = existingAssignments[0];
+            
+            // Update existing
+            const { data, error } = await supabase
+                .from('assignment_weeks')
+                .update(payload)
+                .eq('id', assignmentWeek.id)
+                .select();
+            
+            if (error) throw error;
+            assignmentWeek = { ...data[0], week_start: payload.week_start };
+
+            // Delete any other duplicate assignment_weeks
+            if (existingAssignments.length > 1) {
+                const idsToDelete = existingAssignments.slice(1).map(a => a.id);
+                await supabase
+                    .from('assignment_items')
+                    .delete()
+                    .in('assignment_week_fk', idsToDelete);
+                
+                await supabase
+                    .from('assignment_weeks')
+                    .delete()
+                    .in('id', idsToDelete);
+            }
+        } else {
+            // Insert new
+            const { data, error } = await supabase
+                .from('assignment_weeks')
+                .insert(payload)
+                .select();
+            
+            if (error) throw error;
+            assignmentWeek = { ...data[0], week_start: payload.week_start };
+        }
+        console.log('Supabase upsert success, assignmentWeek:', assignmentWeek);
+        
+        // 3. Update assignment_items
+        await supabase
+            .from('assignment_items')
+            .delete()
+            .eq('assignment_week_fk', assignmentWeek.id);
+
+        const { error: itemError } = await supabase
+            .from('assignment_items')
+            .insert({
+                assignment_week_fk: assignmentWeek.id,
+                jobsite_fk: actualJobsiteId,
+                days: [1, 2, 3, 4, 5], // Assuming all days for now
+                week_start: assignmentWeek.week_start
+            });
+        if (itemError) throw itemError;
+        
+        console.log('Supabase item upsert success');
+
+        // 3. Log activity
         await logActivity('assignment_update', {
-          employee_fk: employeeId,
-          jobsite_fk: actualJobsiteId,
-          week_start: weekStr,
-          jobsite_name: targetDisplaySite.jobsite_name,
-          previous_jobsite: previousJobsiteName
+            employeeId: employee.id,
+            jobsiteId: actualJobsiteId,
+            weekStart: weekStr,
+            jobsiteName: targetDisplaySite.jobsite_name
+        }, employee.id);
+
+        // 5. Send notification to employee
+        const weeksUntil = Math.max(0, Math.round((new Date(weekStr).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
+        const portalMessage = `Update Type: Assignment Change\r\nEmployee: ${employee.first_name} ${employee.last_name}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: ${weekStr}\r\nPrevious Assignment: ${previousJobsiteName}\r\nNew Assignment: ${targetDisplaySite?.jobsite_name}\r\nDays: Mon, Tue, Wed, Thu, Fri, Sat, Sun\r\nWeeks Until New Assignment: ${weeksUntil}`;
+
+        await sendNotification({
+          employeeId: employee.id,
+          title: 'Assignment Change',
+          message: portalMessage,
+          type: 'info',
+          sendEmail: true,
+          emailData: {
+            updateType: 'Assignment Change',
+            jobsiteName: targetDisplaySite?.jobsite_name,
+            weekStartDate: weekStr,
+            customEmailBody: portalMessage
+          }
         });
       } catch (err) {
-        console.error('Error saving assignment via backend:', err);
+        console.error('Error saving assignment:', err);
         setAssignments(previousAssignments); // Revert local state
       }
   };
@@ -357,10 +552,7 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
       // 2. Prepare new assignments, respecting rotation logic
       const newAssignments = [];
       for (const row of prevData) {
-        // Match by employee_fk (UUID)
-        const employee = employees.find(e => 
-          (row.employee_fk && e.id === row.employee_fk)
-        );
+        const employee = employees.find(e => e.id === row.employee_fk);
         
         if (!employee || !employee.is_active) continue;
 
@@ -371,7 +563,7 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
         newAssignments.push({
           employee_fk: employee.id,
           week_start: currentWeekStr,
-          assignment_type: onRotation ? 'Rotation' : row.assignment_type,
+          assignment_name: onRotation ? 'Rotation' : row.assignment_name,
           status: onRotation ? 'rotation' : (row.status || 'unassigned')
         });
       }
@@ -403,16 +595,16 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
             .delete()
             .eq('assignment_week_fk', assignmentWeekId);
             
-          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_type);
+          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_name);
           if (jobsite) {
             await supabase
-              .from('assignment_items')
-              .insert({
-                assignment_week_fk: assignmentWeekId,
-                jobsite_fk: jobsite.id,
-                days: [1, 2, 3, 4, 5],
-                week_start: assignment.week_start
-              });
+                .from('assignment_items')
+                .insert({
+                  assignment_week_fk: assignmentWeekId,
+                  jobsite_fk: jobsite.id,
+                  days: [1, 2, 3, 4, 5],
+                  week_start: assignment.week_start
+                });
           }
         } else {
           const { data, error } = await supabase
@@ -424,16 +616,16 @@ export default function Scheduler({ employees, jobsites, jobsiteGroups }: Schedu
           const assignmentWeekId = data.id;
           
           // Insert assignment_items
-          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_type);
+          const jobsite = jobsites.find(j => j.jobsite_name === assignment.assignment_name);
           if (jobsite) {
             await supabase
-              .from('assignment_items')
-              .insert({
-                assignment_week_fk: assignmentWeekId,
-                jobsite_fk: jobsite.id,
-                days: [1, 2, 3, 4, 5],
-                week_start: assignment.week_start
-              });
+                .from('assignment_items')
+                .insert({
+                  assignment_week_fk: assignmentWeekId,
+                  jobsite_fk: jobsite.id,
+                  days: [1, 2, 3, 4, 5],
+                  week_start: assignment.week_start
+                });
           }
         }
       }

@@ -10,7 +10,6 @@ import { format, startOfWeek, eachWeekOfInterval, endOfYear, addWeeks } from 'da
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { isRotationWeek } from '../utils/rotation';
 import { RotationConfig } from '../types';
-import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 
 // Map Controller for programmatic zooming/centering
 function MapController({ target }: { target: { center?: [number, number], bounds?: L.LatLngBoundsExpression } | null }) {
@@ -50,6 +49,7 @@ interface MapPortalProps {
   jobsites: Jobsite[];
   jobsiteGroups: JobsiteGroup[];
   employees?: Employee[];
+  currentEmployeeId?: string;
 }
 
 interface SiteStaffing {
@@ -64,13 +64,13 @@ interface OffSitePersonnel {
   employees: Employee[];
 }
 
-export default function MapPortal({ jobsites, jobsiteGroups, employees: providedEmployees }: MapPortalProps) {
+export default function MapPortal({ jobsites, jobsiteGroups, employees: providedEmployees, currentEmployeeId }: MapPortalProps) {
   const fieldEmployees = useMemo(() => (providedEmployees || []).filter(e => e.role !== 'hr'), [providedEmployees]);
   const [staffing, setStaffing] = useState<Record<string, SiteStaffing>>({});
   const [offSite, setOffSite] = useState<Record<string, OffSitePersonnel>>({});
   const [legendOpen, setLegendOpen] = useState(true);
-  const [sortBy, setSortBy] = useState<'name' | 'customer' | 'staffing'>('name');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [sortBy, setSortBy] = useState<'name' | 'customer' | 'staffing'>('staffing');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [expandedSiteId, setExpandedSiteId] = useState<string | null>(null);
   const [mapTarget, setMapTarget] = useState<{ center?: [number, number], bounds?: L.LatLngBoundsExpression } | null>(null);
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationConfig>>({});
@@ -93,9 +93,12 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
     const weekStr = selectedWeek;
     const weekStartObj = new Date(selectedWeek + 'T00:00:00');
 
-    // Fetch current assignments from backend view
+    // Fetch current assignments from assignment_weeks table
     const queries: any[] = [
-      fetchCurrentScheduleBackend(weekStr)
+      supabase
+        .from('assignment_weeks')
+        .select('*, items:assignment_items(*)')
+        .eq('week_start', weekStr)
     ];
 
     if (fieldEmployees.length === 0 && !providedEmployees) {
@@ -115,16 +118,27 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
     );
 
     const results = await Promise.all(queries);
-    const scheduleData = results[0];
-    const employeesRes = { data: fieldEmployees, error: null };
-    const rotRes = results[results.length - 1];
+    let resultIdx = 0;
+    const weeksRes = results[resultIdx++];
+    
+    let allEmployees = fieldEmployees;
+    if (fieldEmployees.length === 0 && !providedEmployees) {
+      const employeesRes = results[resultIdx++];
+      if (employeesRes.error) {
+        console.error('Error fetching employees:', employeesRes.error);
+      } else {
+        allEmployees = employeesRes.data || [];
+      }
+    }
+    
+    const rotRes = results[resultIdx++];
 
-    if (!scheduleData || employeesRes.error) {
-      console.error('Error fetching staffing data:', employeesRes.error);
+    if (weeksRes.error) {
+      console.error('Error fetching staffing data:', weeksRes.error);
       return;
     }
 
-    const allEmployees = employeesRes.data || [];
+    const weeks = weeksRes.data || [];
     const rotationConfigsMap: Record<string, RotationConfig> = {};
     if (rotRes.data) {
       rotRes.data.forEach((c: RotationConfig) => rotationConfigsMap[c.employee_fk] = c);
@@ -191,23 +205,27 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
         });
       };
 
-      const processRow = (row: any) => {
+      const processWeek = (week: any) => {
         // Match employee by email or ID ref (robust matching)
         const employee = allEmployees.find(e => 
-          (row.email && e.email.toLowerCase() === row.email.toLowerCase()) ||
-          (row.employee_id && e.id === row.employee_id) ||
-          (row.employee_fk && e.id === row.employee_fk)
+          (week.email && e.email.toLowerCase() === week.email.toLowerCase()) ||
+          (week.employee_id && e.employee_id_ref === week.employee_id) ||
+          (week.employee_fk && e.id === week.employee_fk)
         );
 
         if (!employee) return;
 
-        // 1. Check for explicit jobsite assignment (from view)
-        if (row.jobsite_id) {
-          addToSite(row.jobsite_id, employee);
+        // 1. Check for explicit items (new system)
+        if (week.items && week.items.length > 0) {
+          week.items.forEach((item: any) => {
+            if (item.jobsite_fk) {
+              addToSite(item.jobsite_fk, employee);
+            }
+          });
         } 
-        // 2. Fallback to assignment_type matching
-        else if (row.assignment_type || row.jobsite_name) {
-          const assignmentNames = parseAssignmentNames(row.assignment_type || row.jobsite_name);
+        // 2. Fallback to assignment_name matching (legacy/fallback system)
+        else if (week.assignment_name) {
+          const assignmentNames = parseAssignmentNames(week.assignment_name);
           
           assignmentNames.forEach(name => {
             const trimmedName = name.trim().toLowerCase();
@@ -248,7 +266,7 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
         }
       };
 
-      scheduleData.forEach(processRow);
+      weeks.forEach(processWeek);
 
       // Sort by seniority and calculate staffing levels
       Object.keys(staffingMap).forEach(siteId => {
@@ -260,6 +278,20 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
 
       setStaffing(staffingMap);
       setOffSite(offSiteMap);
+
+      // Auto-center on current employee's site if found
+      if (currentEmployeeId) {
+        const mySiteId = Object.keys(staffingMap).find(siteId => 
+          staffingMap[siteId].employees.some(e => e.id === currentEmployeeId)
+        );
+        if (mySiteId) {
+          const mySite = jobsites.find(s => s.id === mySiteId);
+          if (mySite && mySite.lat && mySite.lng) {
+            setMapTarget({ center: [mySite.lat, mySite.lng] });
+            setExpandedSiteId(mySite.id);
+          }
+        }
+      }
     }
   };
 
@@ -439,6 +471,11 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-bold text-lg">{site.jobsite_name}</h3>
                     <div className="flex items-center gap-2">
+                      {siteStaff?.employees.some(e => e.id === currentEmployeeId) && (
+                        <div className="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-500 text-[8px] font-bold uppercase rounded border border-emerald-500/20">
+                          Your Site
+                        </div>
+                      )}
                       {siteStaff?.hasRotationConflict && (
                         <div className="flex items-center gap-1 text-purple-500 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20 text-[8px] font-bold uppercase animate-pulse">
                           <RefreshCw size={8} />
@@ -478,8 +515,9 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
                                 <div className="flex items-center gap-3">
                                   <div className={`w-2 h-2 rounded-full shadow-sm ${getGroupColor(emp.rotation_group)}`} title={`Group ${emp.rotation_group || 'None'}`} />
                                   <div className="flex flex-col">
-                                    <span className={i === 0 ? 'text-emerald-400 font-bold' : 'text-gray-300'}>
+                                    <span className={(i === 0 || emp.id === currentEmployeeId) ? 'text-emerald-400 font-bold' : 'text-gray-300'}>
                                       {emp.first_name} {emp.last_name}
+                                      {emp.id === currentEmployeeId && <span className="ml-1 text-[8px] opacity-50">(YOU)</span>}
                                     </span>
                                     {hasConflict && (
                                       <span className="text-[7px] font-bold uppercase text-emerald-500">
@@ -546,7 +584,7 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
       </div>
 
       {/* Professional Logistics Legend */}
-      <div className={`absolute top-4 right-4 lg:top-6 lg:right-6 z-[1000] transition-all duration-500 ease-in-out ${legendOpen ? 'w-[calc(100%-2rem)] sm:w-80' : 'w-12 lg:w-14'}`}>
+      <div className={`absolute top-4 right-4 lg:top-6 lg:right-6 z-[1000] transition-all duration-500 ease-in-out ${legendOpen ? 'w-[calc(100%-2rem)] sm:w-80' : 'w-auto'}`}>
         <div className="bg-[#050A08]/90 backdrop-blur-xl border border-emerald-500/20 rounded-[1.5rem] lg:rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden">
           <button 
             onClick={() => setLegendOpen(!legendOpen)}
@@ -554,7 +592,7 @@ export default function MapPortal({ jobsites, jobsiteGroups, employees: provided
           >
             <div className="flex items-center gap-3 lg:gap-4">
               <div className="relative">
-                <div className="h-8 lg:h-10 flex items-center justify-center group-hover:scale-105 transition-transform overflow-hidden">
+                <div className="h-8 lg:h-10 flex items-center justify-center group-hover:scale-105 transition-transform overflow-hidden min-w-[32px] lg:min-w-[40px]">
                   <img src="/logo.png" alt="Greenergy Logo" className="h-full object-contain" referrerPolicy="no-referrer" />
                 </div>
               </div>

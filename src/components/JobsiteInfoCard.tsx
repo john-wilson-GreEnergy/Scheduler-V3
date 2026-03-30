@@ -5,9 +5,10 @@ import { Jobsite } from '../types';
 interface JobsiteInfoCardProps {
   jobsite: Jobsite;
   title?: string;
+  currentManager?: string;
 }
 
-const JobsiteInfoCard: React.FC<JobsiteInfoCardProps> = ({ jobsite, title = "Jobsite Information" }) => {
+const JobsiteInfoCard: React.FC<JobsiteInfoCardProps> = ({ jobsite, title = "Jobsite Information", currentManager }) => {
   const googleMapsUrl = jobsite.lat && jobsite.lng 
     ? `https://www.google.com/maps/dir/?api=1&destination=${jobsite.lat},${jobsite.lng}`
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(jobsite.full_address || jobsite.jobsite_name)}`;
@@ -65,7 +66,7 @@ const JobsiteInfoCard: React.FC<JobsiteInfoCardProps> = ({ jobsite, title = "Job
               <p className="text-[10px] text-gray-600 uppercase tracking-widest font-bold">Site Manager</p>
               <div className="flex items-center gap-2 mt-1">
                 <User size={12} className="text-emerald-500" />
-                <p className="text-sm text-gray-300">{jobsite.manager || 'Unassigned'}</p>
+                <p className="text-sm text-gray-300">{currentManager || jobsite.manager || 'Unassigned'}</p>
               </div>
             </div>
             <div>

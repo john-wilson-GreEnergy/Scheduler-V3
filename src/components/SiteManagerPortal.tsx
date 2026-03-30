@@ -27,6 +27,7 @@ import { SurveyInitiator } from './SurveyInitiator';
 import { TargetSelectionModal } from './TargetSelectionModal';
 import { AssignmentImporter } from './AssignmentImporter';
 import { IconComponent } from './PortalComponents';
+import { isScheduledActive } from '../utils/portal';
 import { format, startOfWeek, addWeeks, parseISO } from 'date-fns';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { isRotationWeek } from '../utils/rotation';
@@ -117,7 +118,13 @@ export default function SiteManagerPortal() {
         .select('*');
 
       const { data: portalActions } = await supabase
-        .from('portal_actions')
+        .from('portal_required_actions')
+        .select('*')
+        .eq('active', true)
+        .order('sort_order', { ascending: true });
+
+      const { data: greEnergyLinks } = await supabase
+        .from('greenergy_links')
         .select('*')
         .eq('active', true)
         .order('sort_order', { ascending: true });
@@ -126,9 +133,7 @@ export default function SiteManagerPortal() {
       const { data: announcements } = await supabase
         .from('announcements')
         .select('*')
-        .eq('active', true)
-        .lte('start_date', todayStr)
-        .gte('end_date', todayStr);
+        .eq('active', true);
 
       const { data: recentActivity } = await supabase
         .from('recent_activity')
@@ -138,9 +143,20 @@ export default function SiteManagerPortal() {
 
       setAllJobsites(allSites || []);
       setJobsiteGroups(groups || []);
-      setPortalActions(portalActions || []);
-      setAnnouncements(announcements || []);
+      const combinedActions = [
+        ...(portalActions || []).map(a => ({ ...a, type: 'required_action' })),
+        ...(greEnergyLinks || []).map(l => ({ ...l, type: 'greenergy_link' }))
+      ];
+      
+      const now = new Date();
+      const filteredActions = combinedActions.filter(action => isScheduledActive(action, now));
+
+      setPortalActions(filteredActions);
+      setAnnouncements((announcements || []).filter(ann => isScheduledActive(ann, now)));
       setRecentActivity(recentActivity || []);
+
+      let currentWithItems: any = null;
+      let upcoming: any[] = [];
 
       if (employee) {
         const now = new Date();
@@ -150,11 +166,14 @@ export default function SiteManagerPortal() {
           .select('*');
 
         if (assignments) {
-          const current = assignments.filter(a => new Date(a.week_start + 'T12:00:00') <= now).pop();
-          const upcoming = assignments.filter(a => new Date(a.week_start + 'T12:00:00') > now);
+          const weekStart = format(startOfWeek(now, { weekStartsOn: 1 }), 'yyyy-MM-dd');
+          // Prioritize exact match for current week
+          const exactCurrent = assignments.find(a => a.week_start === weekStart);
+          const current = exactCurrent || assignments.filter(a => new Date(a.week_start + 'T12:00:00') <= now).pop();
+          upcoming = assignments.filter(a => new Date(a.week_start + 'T12:00:00') > now);
           
           // Use the joined assignment_items data
-          const currentWithItems = current ? {
+          currentWithItems = current ? {
             ...current,
             assignment_items: current.assignment_items || []
           } : null;
@@ -162,28 +181,43 @@ export default function SiteManagerPortal() {
           setCurrentAssignment(currentWithItems);
           setUpcomingAssignments(upcoming);
 
-        if (rotationConfigs) {
-          const configMap: Record<string, RotationConfig> = {};
-          rotationConfigs.forEach(config => {
-            configMap[config.employee_fk] = config;
-          });
-          setRotationConfigs(configMap);
+          if (rotationConfigs) {
+            const configMap: Record<string, RotationConfig> = {};
+            rotationConfigs.forEach(config => {
+              configMap[config.employee_fk] = config;
+            });
+            setRotationConfigs(configMap);
+          }
         }
       }
-    }
 
-      // If no manager match, find site via current week assignment_weeks email
+      // Resolve the jobsite based on current assignment items first
       let assignmentSite: Jobsite | null = null;
-      if (employee?.email) {
+      let assignedSites: Jobsite[] = [];
+
+      if (currentWithItems?.assignment_items && currentWithItems.assignment_items.length > 0) {
+        assignedSites = currentWithItems.assignment_items
+          .map((item: any) => item.jobsites)
+          .filter((s: any): s is Jobsite => !!s);
+        
+        if (assignedSites.length > 0) {
+          assignmentSite = assignedSites[0];
+        }
+      }
+
+      // Fallback to the old logic if no items found (e.g. legacy data or placeholder status)
+      if (!assignmentSite && employee?.id) {
         const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
         const { data: currentAssignmentData } = await supabase
           .from('assignment_weeks')
-          .select('assignment_name, status')
-          .eq('email', employee.email)
+          .select('*')
+          .eq('employee_fk', employee.id)
           .eq('week_start', weekStart)
           .maybeSingle();
 
-        if (currentAssignmentData?.assignment_name || currentAssignmentData?.status) {
+        console.log('SiteManagerPortal: CurrentAssignmentData (fallback):', currentAssignmentData);
+
+        if (currentAssignmentData) {
           const assignmentNames = parseAssignmentNames(currentAssignmentData.assignment_name || '');
           const status = currentAssignmentData.status || '';
           
@@ -192,19 +226,61 @@ export default function SiteManagerPortal() {
                  assignmentNames.includes(s.jobsite_name || '') ||
                  s.jobsite_name.toLowerCase() === status.toLowerCase()
           ) || null;
+
+          // Handle placeholder statuses if no jobsite matched
+          if (!assignmentSite && status) {
+            const isPlaceholder = PLACEHOLDER_SITES.some(p => p.toLowerCase() === status.toLowerCase());
+            if (isPlaceholder) {
+              assignmentSite = {
+                id: 'placeholder-' + status.toLowerCase(),
+                jobsite_name: status.charAt(0).toUpperCase() + status.slice(1).toLowerCase(),
+                customer: 'Internal',
+                is_active: true,
+                full_address: 'N/A'
+              } as Jobsite;
+            }
+          }
         }
       }
 
-      // Priority: 1. Placeholder assignment, 2. Managed site, 3. Any assignment, 4. First site
-      const isPlaceholderAssignment = assignmentSite && PLACEHOLDER_SITES.some(s => s.toLowerCase() === assignmentSite?.jobsite_name.toLowerCase());
-      const siteToUse = (isPlaceholderAssignment ? assignmentSite : managedSite) || assignmentSite || (allSites && allSites[0]) || null;
+      // Priority: 1. Assignment (including placeholder), 2. Managed site, 3. First site
+      const siteToUse = assignmentSite || managedSite || (allSites && allSites[0]) || null;
+      const isPlaceholderAssignment = siteToUse?.id?.toString().startsWith('placeholder-') || 
+                                     (siteToUse && PLACEHOLDER_SITES.some(s => s.toLowerCase() === siteToUse.jobsite_name.toLowerCase()));
+      
+      console.log('SiteManagerPortal: siteToUse Logic:', {
+        managedSite: managedSite?.jobsite_name,
+        assignmentSite: assignmentSite?.jobsite_name,
+        assignedSitesCount: assignedSites.length,
+        siteToUse: siteToUse?.jobsite_name
+      });
+
       setJobsite(siteToUse);
 
       // Resolve the group: if the site has a jobsite_group, combine all sites in that group
       const resolvedGroupName = siteToUse?.jobsite_group || siteToUse?.jobsite_name || '';
-      const resolvedGroupSites = siteToUse?.jobsite_group
-        ? (allSites || []).filter(s => s.jobsite_group === siteToUse.jobsite_group)
-        : siteToUse ? [siteToUse] : [];
+      
+      // If we have assigned sites from items, use those as the base for the group
+      let resolvedGroupSites: Jobsite[] = [];
+      if (assignedSites.length > 0 && !isPlaceholderAssignment) {
+        // Get all group names/IDs from assigned sites
+        const groupNames = new Set(assignedSites.map(s => s.jobsite_group).filter(Boolean));
+        const groupIds = new Set(assignedSites.map(s => s.group_id).filter(Boolean));
+
+        if (groupNames.size > 0 || groupIds.size > 0) {
+          resolvedGroupSites = (allSites || []).filter(j => 
+            (j.jobsite_group && groupNames.has(j.jobsite_group)) || 
+            (j.group_id && groupIds.has(j.group_id)) ||
+            assignedSites.some(as => as.id === j.id)
+          );
+        } else {
+          resolvedGroupSites = assignedSites;
+        }
+      } else if (siteToUse?.jobsite_group) {
+        resolvedGroupSites = (allSites || []).filter(s => s.jobsite_group === siteToUse.jobsite_group);
+      } else if (siteToUse) {
+        resolvedGroupSites = [siteToUse];
+      }
 
       setSiteGroupName(resolvedGroupName);
       setGroupJobsites(resolvedGroupSites);
@@ -261,6 +337,16 @@ export default function SiteManagerPortal() {
             .filter(Boolean)
         );
 
+        // Fallback: Add employees whose assignment_name matches the site/group
+        (allCurrentWeek || []).forEach(aw => {
+          if (!aw.employee_fk) return;
+          const names = parseAssignmentNames(aw.assignment_name || '');
+          const matches = names.some(n => matchNamesList.includes(n));
+          if (matches) {
+            assignedRefs.add(aw.employee_fk);
+          }
+        });
+
         // Get all employees + their rotation configs
         const { data: empData } = await supabase
           .from('employees')
@@ -275,10 +361,10 @@ export default function SiteManagerPortal() {
         const configMap: Record<string, RotationConfig> = {};
         (rotConfigs || []).forEach(c => { configMap[c.employee_fk] = c; });
 
-        // Map employee_id -> assignment_week for this week
+        // Map employee_fk -> assignment_week for this week
         const assignmentMap: Record<string, AssignmentWeek> = {};
         (allCurrentWeek || []).forEach(aw => {
-          if (aw.employee_id) assignmentMap[aw.employee_id] = aw;
+          if (aw.employee_fk) assignmentMap[aw.employee_fk] = aw;
         });
 
         const enriched: SiteEmployee[] = (empData || [])
@@ -320,7 +406,7 @@ export default function SiteManagerPortal() {
           // Fetch action completions for site employees
           const { data: compData } = await supabase
             .from('portal_action_completions')
-            .select('*, action:portal_actions(title, description, icon), employee:employees(first_name, last_name, email, job_title)')
+            .select('*, action:portal_required_actions(title, description, icon), employee:employees!employee_id(first_name, last_name, email, job_title), confirmer:employees!confirmed_by(first_name, last_name)')
             .in('employee_id', empIds)
             .order('completed_at', { ascending: false });
           setCompletions(compData || []);
@@ -508,7 +594,7 @@ export default function SiteManagerPortal() {
             )}
 
             {/* KPI strip */}
-            {!isPlaceholderMode && (
+            {!isPlaceholderMode ? (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                   { label: 'Total Assigned', value: siteEmployees.length, icon: <Users size={20} />, color: 'emerald' },
@@ -530,88 +616,113 @@ export default function SiteManagerPortal() {
                   </motion.div>
                 ))}
               </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
+                  <h3 className="text-xl font-bold text-white mb-4">Personal Dashboard</h3>
+                  <p className="text-gray-400 text-sm leading-relaxed">
+                    You are currently on <span className="text-emerald-500 font-bold">{personalStatus}</span>. 
+                    Your jobsite management tools are restricted during this period.
+                  </p>
+                </div>
+                <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
+                  <h3 className="text-xl font-bold text-white mb-4">Quick Links</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button onClick={() => setActiveTab('requests')} className="p-4 bg-white/5 hover:bg-white/10 rounded-2xl text-center transition-all">
+                      <ClipboardList className="mx-auto mb-2 text-emerald-500" size={20} />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Requests</span>
+                    </button>
+                    <button onClick={() => setActiveTab('actions')} className="p-4 bg-white/5 hover:bg-white/10 rounded-2xl text-center transition-all">
+                      <Layers className="mx-auto mb-2 text-emerald-500" size={20} />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Links</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Today at GreEnergy & Required Actions */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 bg-[#0A120F] border border-white/5 rounded-3xl p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-xl font-bold text-white flex items-center gap-2">Today at GreEnergy</h2>
-                  <span className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-gray-500">
-                    {announcements.length + recentActivity.length}
-                  </span>
-                </div>
-                <div className="space-y-6">
-                  {announcements.length > 0 && (
-                    <div className="space-y-4">
-                      <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Announcements</h3>
-                      {announcements.map(ann => (
-                        <div key={ann.id} className={`p-4 rounded-2xl border ${ann.level === 'high' ? 'bg-red-500/5 border-red-500/20' : 'bg-white/5 border-white/5'} ${ann.is_reminder ? 'border-l-4 border-l-emerald-500' : ''}`}>
-                          <div className="flex items-center justify-between mb-1">
-                            <h3 className={`font-bold text-sm ${ann.level === 'high' ? 'text-red-400' : 'text-white'}`}>{ann.title}</h3>
-                            {ann.is_reminder && (
-                              <span className="flex items-center gap-1 text-[8px] font-bold text-emerald-500 uppercase tracking-wider">
-                                <Clock size={10} /> Reminder
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-gray-400 mt-1">{ann.message}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {recentActivity.length > 0 && (
-                    <div className="space-y-4">
-                      <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Recent Activity</h3>
-                      <div className="space-y-3">
-                        {recentActivity.map(act => (
-                          <div key={act.id} className="flex items-center gap-3 text-xs">
-                            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-                            <span className="text-gray-400">{act.event_type.replace('_', ' ')}</span>
-                            <span className="text-gray-600 ml-auto">{new Date(act.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            {!isPlaceholderMode && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 bg-[#0A120F] border border-white/5 rounded-3xl p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2">Today at GreEnergy</h2>
+                    <span className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-gray-500">
+                      {announcements.length + recentActivity.length}
+                    </span>
+                  </div>
+                  <div className="space-y-6">
+                    {announcements.length > 0 && (
+                      <div className="space-y-4">
+                        <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Announcements</h3>
+                        {announcements.map(ann => (
+                          <div key={ann.id} className={`p-4 rounded-2xl border ${ann.level === 'high' ? 'bg-red-500/5 border-red-500/20' : 'bg-white/5 border-white/5'} ${ann.is_reminder ? 'border-l-4 border-l-emerald-500' : ''}`}>
+                            <div className="flex items-center justify-between mb-1">
+                              <h3 className={`font-bold text-sm ${ann.level === 'high' ? 'text-red-400' : 'text-white'}`}>{ann.title}</h3>
+                              {ann.is_reminder && (
+                                <span className="flex items-center gap-1 text-[8px] font-bold text-emerald-500 uppercase tracking-wider">
+                                  <Clock size={10} /> Reminder
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-400 mt-1">{ann.message}</p>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-xl font-bold text-white">Required Actions</h2>
-                  <span className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-gray-500">
-                    {portalActions.filter(a => a.priority === 'high').length}
-                  </span>
-                </div>
-                <div className="space-y-3">
-                  {portalActions.filter(a => a.priority === 'high').map(action => {
-                    const isCompleted = completions.some(c => c.action_id === action.id && c.employee_id === employee?.id);
-                    return (
-                      <div key={action.id} className={`border rounded-2xl overflow-hidden transition-all ${isCompleted ? 'border-emerald-500/20' : 'border-white/5'}`}>
-                        <button
-                          onClick={() => {
-                            if (action.embed_in_portal) {
-                              setEmbeddedFormAction(action);
-                            } else {
-                              window.open(resolveUrl(action.url), action.open_in_new_tab ? "_blank" : "_self");
-                            }
-                          }}
-                          className={`w-full flex items-center gap-3 p-4 text-left transition-colors ${isCompleted ? 'bg-emerald-500/5 hover:bg-emerald-500/10' : 'bg-white/5 hover:bg-white/[0.08]'}`}
-                        >
-                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all shrink-0 ${isCompleted ? 'bg-emerald-500 text-black' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                            <IconComponent name={action.icon} className="w-4 h-4" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h3 className="text-sm font-bold text-white truncate">{action.title}</h3>
-                          </div>
-                        </button>
+                    )}
+                    {recentActivity.length > 0 && (
+                      <div className="space-y-4">
+                        <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Recent Activity</h3>
+                        <div className="space-y-3">
+                          {recentActivity.map(act => (
+                            <div key={act.id} className="flex items-center gap-3 text-xs">
+                              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
+                              <span className="text-gray-400">{act.event_type.replace('_', ' ')}</span>
+                              <span className="text-gray-600 ml-auto">{new Date(act.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    );
-                  })}
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-xl font-bold text-white">Required Actions</h2>
+                    <span className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-gray-500">
+                      {portalActions.filter(a => a.type === 'required_action').length}
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {portalActions.filter(a => a.type === 'required_action').map(action => {
+                      const isCompleted = completions.some(c => c.action_id === action.id && c.employee_id === employee?.id);
+                      return (
+                        <div key={action.id} className={`border rounded-2xl overflow-hidden transition-all ${isCompleted ? 'border-emerald-500/20' : 'border-white/5'}`}>
+                          <button
+                            onClick={() => {
+                              if (action.embed_in_portal) {
+                                setEmbeddedFormAction(action);
+                              } else {
+                                window.open(resolveUrl(action.url), action.open_in_new_tab ? "_blank" : "_self");
+                              }
+                            }}
+                            className={`w-full flex items-center gap-3 p-4 text-left transition-colors ${isCompleted ? 'bg-emerald-500/5 hover:bg-emerald-500/10' : 'bg-white/5 hover:bg-white/[0.08]'}`}
+                          >
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all shrink-0 ${isCompleted ? 'bg-emerald-500 text-black' : 'bg-emerald-500/10 text-emerald-500'}`}>
+                              <IconComponent name={action.icon} className="w-4 h-4" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <h3 className="text-sm font-bold text-white truncate">{action.title}</h3>
+                            </div>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {/* Middle Row: Performance Pulse, Assignment & Quick Actions */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -681,7 +792,18 @@ export default function SiteManagerPortal() {
             </div>
             {/* Jobsite Info Card & Assignment Timeline */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {jobsite && !isPlaceholderMode && <JobsiteInfoCard jobsite={jobsite} />}
+              <div className="space-y-6">
+                {groupJobsites.length > 0 && !isPlaceholderMode && groupJobsites.map(js => {
+                  const siteManager = siteEmployees.find(m => m.role?.toLowerCase().includes('manager') && m.current_assignments?.some(a => a.jobsite_fk === js.id));
+                  return (
+                    <JobsiteInfoCard 
+                      key={js.id} 
+                      jobsite={js} 
+                      currentManager={siteManager ? `${siteManager.first_name} ${siteManager.last_name}` : undefined}
+                    />
+                  );
+                })}
+              </div>
               <div className={`${isPlaceholderMode ? 'lg:col-span-2' : ''} bg-[#0A120F] border border-white/5 rounded-3xl p-8`}>
                 <div className="flex items-center justify-between mb-8">
                   <div>
@@ -925,7 +1047,7 @@ export default function SiteManagerPortal() {
                                   {comp.confirmed_at && comp.confirmed_by && (
                                     <p className="text-[10px] text-emerald-500/70 mt-0.5 flex items-center gap-1">
                                       <UserCheck size={10} />
-                                      Confirmed by {comp.confirmed_by} · {format(new Date(comp.confirmed_at), 'MMM d, h:mm a')}
+                                      Confirmed by {comp.confirmer?.first_name} {comp.confirmer?.last_name} · {format(new Date(comp.confirmed_at), 'MMM d, h:mm a')}
                                     </p>
                                   )}
                                 </div>
@@ -989,7 +1111,7 @@ export default function SiteManagerPortal() {
         {activeTab === 'importer' && (
           <div className="space-y-6">
             <h2 className="text-2xl font-bold text-white">Assignment Importer</h2>
-            <AssignmentImporter />
+            <AssignmentImporter onImportComplete={fetchData} />
           </div>
         )}
         {activeTab === 'map' && (
@@ -1104,7 +1226,7 @@ export default function SiteManagerPortal() {
         {activeTab === 'actions' && (
           <motion.div key="actions" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {portalActions.map((action) => (
+              {portalActions.filter(a => a.type === 'greenergy_link').map((action) => (
                 <motion.button 
                   key={action.id} 
                   onClick={() => {
@@ -1134,7 +1256,21 @@ export default function SiteManagerPortal() {
             {groupJobsites.length > 0 ? (
               <div className="space-y-6">
                 {groupJobsites.map(site => (
-                  <JobsiteInfoCard key={site.id} jobsite={site} title={site.jobsite_name} />
+                  <JobsiteInfoCard 
+                    key={site.id} 
+                    jobsite={site} 
+                    title={site.jobsite_name} 
+                    currentManager={(() => {
+                      const sm = siteEmployees.find(m => 
+                        m.role?.toLowerCase().includes('manager') && 
+                        m.current_assignments?.some(a => 
+                          a.jobsite_fk === site.id || 
+                          (site.group_id && allJobsites.find(js => js.id === a.jobsite_fk)?.group_id === site.group_id)
+                        )
+                      );
+                      return sm ? `${sm.first_name} ${sm.last_name}` : undefined;
+                    })()}
+                  />
                 ))}
               </div>
             ) : (

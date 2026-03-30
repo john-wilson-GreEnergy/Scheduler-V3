@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { Employee, Jobsite, JobsiteGroup } from '../types';
 import { format, startOfWeek, addWeeks, parseISO } from 'date-fns';
+import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 import { 
   Calendar, 
   Users, 
@@ -56,10 +57,10 @@ export default function LogisticsForecast({ employees, jobsites, jobsiteGroups, 
       const startStr = format(startWeek, 'yyyy-MM-dd');
       const endStr = format(addWeeks(startWeek, 8), 'yyyy-MM-dd');
       
-      const { data: scheduleData } = await supabase.from('v_current_schedule')
-          .select('*')
-          .gte('week_start', startStr)
-          .lt('week_start', endStr);
+      const scheduleData = await fetchCurrentScheduleBackend('', {
+        gte: startStr,
+        lt: endStr
+      });
 
       const combined: AssignmentData[] = [];
       const seen = new Set<string>();

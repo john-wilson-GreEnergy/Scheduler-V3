@@ -30,112 +30,10 @@ import PortalLayout from './PortalLayout';
 import MapPortal from './MapPortal';
 import JobsiteInfoCard from './JobsiteInfoCard';
 import Chat from './Chat';
+import { isScheduledActive } from '../utils/portal';
 import { format, startOfMonth, endOfMonth, startOfQuarter, endOfQuarter, isWithinInterval, addDays, subDays, getDay, getDate, getMonth, startOfWeek, addWeeks } from 'date-fns';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 
-const isScheduledActive = (item: Announcement | PortalAction, now: Date): boolean => {
-  // If manual dates are set, they take precedence or act as a boundary
-  if (item.start_date && item.start_date.trim() !== '') {
-    const start = new Date(item.start_date + 'T00:00:00');
-    if (!isNaN(start.getTime()) && now < start) return false;
-  }
-  if (item.end_date && item.end_date.trim() !== '') {
-    const end = new Date(item.end_date + 'T23:59:59');
-    if (!isNaN(end.getTime()) && now > end) return false;
-  }
-
-  // Check Announcement specific schedule
-  if ('scheduling_mode' in item && item.scheduling_mode === 'weeks') {
-    const weekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
-    const endOfWeekRange = addWeeks(weekStart, item.weeks_count || 1);
-    return isWithinInterval(now, { start: weekStart, end: endOfWeekRange });
-  }
-
-  // Check PortalAction specific schedule
-  if ('schedule_type' in item && item.schedule_type && item.schedule_type !== 'none') {
-    const portalAction = item as PortalAction;
-    const duration = portalAction.duration_days || 7;
-    const monthStart = startOfMonth(now);
-    const monthEnd = endOfMonth(now);
-    const quarterStart = startOfQuarter(now);
-    const quarterEnd = endOfQuarter(now);
-
-    let triggerDate: Date;
-    switch (item.schedule_type) {
-      case 'first_week_month':
-        triggerDate = monthStart;
-        break;
-      case 'last_week_month':
-        triggerDate = subDays(monthEnd, 6);
-        break;
-      case 'first_week_quarter':
-        triggerDate = quarterStart;
-        break;
-      case 'last_week_quarter':
-        triggerDate = subDays(quarterEnd, 6);
-        break;
-      default:
-        return true;
-    }
-    
-    return isWithinInterval(now, { 
-      start: triggerDate, 
-      end: addDays(triggerDate, duration - 1) 
-    });
-  }
-
-  // Check PortalAction specific recurrence
-  if ('recurrence_type' in item && item.recurrence_type && item.recurrence_type !== 'none') {
-    const portalAction = item as PortalAction;
-    const duration = portalAction.duration_days || 7;
-    const dayOfMonth = getDate(now);
-    const dayOfWeek = getDay(now); // 0-6
-    const month = getMonth(now); // 0-11
-    const year = now.getFullYear();
-
-    let triggerDate: Date;
-
-    switch (item.recurrence_type) {
-      case 'weekly': {
-        // Find the most recent occurrence of the recurrence_day
-        const targetDay = item.recurrence_day ?? 1;
-        triggerDate = subDays(now, (dayOfWeek - targetDay + 7) % 7);
-        triggerDate.setHours(0, 0, 0, 0);
-        break;
-      }
-      case 'monthly': {
-        const targetDay = item.recurrence_day ?? 1;
-        triggerDate = new Date(year, month, targetDay);
-        // If today is before the trigger date this month, check last month's trigger
-        if (now < triggerDate) {
-          triggerDate = new Date(year, month - 1, targetDay);
-        }
-        break;
-      }
-      case 'quarterly': {
-        const targetDay = item.recurrence_day ?? 1;
-        const quarterMonths = [0, 3, 6, 9];
-        const currentQuarterMonth = quarterMonths.find(m => m <= month) ?? 0;
-        triggerDate = new Date(year, currentQuarterMonth, targetDay);
-        // If today is before the trigger date this quarter, check last quarter's trigger
-        if (now < triggerDate) {
-          const lastQuarterMonth = quarterMonths.reverse().find(m => m < currentQuarterMonth) ?? 9;
-          triggerDate = new Date(year - (currentQuarterMonth === 0 ? 1 : 0), lastQuarterMonth, targetDay);
-        }
-        break;
-      }
-      default:
-        return true;
-    }
-
-    return isWithinInterval(now, { 
-      start: triggerDate, 
-      end: addDays(triggerDate, duration - 1) 
-    });
-  }
-
-  return true;
-};
 
 export default function EmployeePortal() {
   const { employee, user } = useAuth();
@@ -154,7 +52,6 @@ export default function EmployeePortal() {
   const [assignmentHistory, setAssignmentHistory] = useState<AssignmentWeek[]>([]);
   const [assignmentItems, setAssignmentItems] = useState<AssignmentItem[]>([]);
   const [portalActions, setPortalActions] = useState<PortalAction[]>([]);
-  const [requiredActions, setRequiredActions] = useState<PortalAction[]>([]);
   const [jobsites, setJobsites] = useState<Jobsite[]>([]);
   const [jobsiteGroups, setJobsiteGroups] = useState<JobsiteGroup[]>([]);
   const [portalRequests, setPortalRequests] = useState<any[]>([]);
@@ -169,6 +66,8 @@ export default function EmployeePortal() {
   const [myCompletions, setMyCompletions] = useState<string[]>([]); // action_ids already completed
   const [expandedAction, setExpandedAction] = useState<string | null>(null);
   const [embeddedFormAction, setEmbeddedFormAction] = useState<PortalAction | null>(null);
+  const [roster, setRoster] = useState<any[]>([]);
+  const [loadingRoster, setLoadingRoster] = useState(false);
 
   const filteredJobsites = useMemo(() => {
     const currentJobsiteIds = currentAssignment?.assignment_items?.map(item => item.jobsites?.id) || [];
@@ -186,7 +85,7 @@ export default function EmployeePortal() {
       .replace(/{{first_name}}/g, encodeURIComponent(employee.first_name))
       .replace(/{{last_name}}/g, encodeURIComponent(employee.last_name))
       .replace(/{{employee_id}}/g, encodeURIComponent(employee.employee_id_ref))
-      .replace(/{{current_site}}/g, encodeURIComponent(currentAssignment?.assignment_type || ''))
+      .replace(/{{current_site}}/g, encodeURIComponent(currentAssignment?.assignment_name || ''))
       .replace(/{{current_customer}}/g, encodeURIComponent(currentCustomer || ''))
       .replace(/{{id}}/g, encodeURIComponent(employee.id));
   };
@@ -200,14 +99,12 @@ export default function EmployeePortal() {
       const queries: any[] = [
         supabase.from('announcements')
           .select('*')
-          .eq('active', true)
-          .lte('start_date', todayStr)
-          .gte('end_date', todayStr),
-        supabase.from('portal_actions')
+          .eq('active', true),
+        supabase.from('portal_required_actions')
           .select('*')
           .eq('active', true)
           .order('sort_order', { ascending: true }),
-        supabase.from('portal_required_actions')
+        supabase.from('greenergy_links')
           .select('*')
           .eq('active', true)
           .order('sort_order', { ascending: true }),
@@ -225,8 +122,7 @@ export default function EmployeePortal() {
             .order('week_start', { ascending: false }),
           supabase.from('portal_requests').select('*').eq('employee_fk', employee.id).order('created_at', { ascending: false }),
           supabase.from('recent_activity').select('*').eq('employee_fk', employee.id).order('created_at', { ascending: false }).limit(5),
-          supabase.from('portal_action_completions').select('action_id').eq('employee_fk', employee.id),
-          supabase.from('portal_required_action_completions').select('action_id').eq('employee_fk', employee.id)
+          supabase.from('portal_action_completions').select('action_id').eq('employee_id', employee.id)
         );
       } else {
         console.log('No employee object available, skipping assignment data fetch.');
@@ -236,14 +132,14 @@ export default function EmployeePortal() {
       
       const annRes = results[0];
       const actionsRes = results[1];
-      const reqActionsRes = results[2];
+      const linksRes = results[2];
       const sitesRes = results[3];
       const groupRes = results[4];
       const rotRes = results[5];
 
       if (annRes.error) console.error('Error fetching announcements:', annRes.error);
       if (actionsRes.error) console.error('Error fetching portal actions:', actionsRes.error);
-      if (reqActionsRes.error) console.error('Error fetching required actions:', reqActionsRes.error);
+      if (linksRes.error) console.error('Error fetching greenergy links:', linksRes.error);
       if (sitesRes.error) console.error('Error fetching jobsites:', sitesRes.error);
       if (groupRes.error) console.error('Error fetching jobsite groups:', groupRes.error);
       if (rotRes.error) console.error('Error fetching rotation configs:', rotRes.error);
@@ -252,23 +148,14 @@ export default function EmployeePortal() {
         const filteredAnnouncements = annRes.data.filter(ann => isScheduledActive(ann, now));
         setAnnouncements(filteredAnnouncements);
       }
-      if (actionsRes.data) {
-        const filteredActions = actionsRes.data.filter(action => {
-          // If it's a link (low priority or link category), show it
-          const isLink = action.priority === 'low' || 
-                        action.category?.toLowerCase().includes('link');
+      
+      const combinedActions = [
+        ...(actionsRes.data || []).map(a => ({ ...a, type: 'required_action' })),
+        ...(linksRes.data || []).map(l => ({ ...l, type: 'greenergy_link' }))
+      ];
 
-          if (isLink) return true;
-          
-          // Check if it's active based on schedule/recurrence
-          return isScheduledActive(action, now);
-        });
-        setPortalActions(filteredActions);
-      }
-      if (reqActionsRes.data) {
-        const filteredReqActions = reqActionsRes.data.filter(action => isScheduledActive(action, now));
-        setRequiredActions(filteredReqActions);
-      }
+      const filteredActions = combinedActions.filter(action => isScheduledActive(action, now));
+      setPortalActions(filteredActions);
       if (sitesRes.data) setJobsites(sitesRes.data);
       if (groupRes.data) {
         console.log('Jobsite Groups (EmployeePortal):', groupRes.data);
@@ -282,19 +169,20 @@ export default function EmployeePortal() {
         setRotationConfigs(configMap);
       }
 
-      if (employee && results.length > 5) {
+      if (employee && results.length > 6) {
         const assignRes = results[6];
         const reqRes = results[7];
         const actRes = results[8];
         const completionsRes = results[9];
-        const reqCompletionsRes = results[10];
 
         if (assignRes.data) {
           console.log('EmployeePortal: assignment data:', assignRes.data);
           const now = new Date();
           
           // Use T12:00:00 when comparing to avoid UTC timezone shift on date-only strings
-          const current = assignRes.data.find(a => new Date(a.week_start + 'T12:00:00') <= now);
+          const weekStart = format(startOfWeek(now, { weekStartsOn: 1 }), 'yyyy-MM-dd');
+          const exactCurrent = assignRes.data.find((a: any) => a.week_start === weekStart);
+          const current = exactCurrent || assignRes.data.filter((a: any) => new Date(a.week_start + 'T12:00:00') <= now).pop();
           // upcoming: future weeks, sorted ascending (soonest first)
           const upcoming = assignRes.data
             .filter(a => new Date(a.week_start + 'T12:00:00') > now)
@@ -315,12 +203,7 @@ export default function EmployeePortal() {
         }
         if (reqRes.data) setPortalRequests(reqRes.data);
         if (actRes.data) setRecentActivity(actRes.data);
-        
-        const allCompletions = [
-          ...(completionsRes?.data || []),
-          ...(reqCompletionsRes?.data || [])
-        ];
-        setMyCompletions(allCompletions.map((c: any) => c.action_id));
+        if (completionsRes?.data) setMyCompletions(completionsRes.data.map((c: any) => c.action_id));
       }
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
@@ -346,7 +229,7 @@ export default function EmployeePortal() {
 
   const findNextDifferentAssignment = () => {
     if (!currentAssignment || upcomingAssignments.length === 0) return null;
-    return upcomingAssignments.find(a => a.assignment_type !== currentAssignment.assignment_type) || null;
+    return upcomingAssignments.find(a => a.assignment_name !== currentAssignment.assignment_name) || null;
   };
 
   const getRequestProgress = (status: string) => {
@@ -389,11 +272,10 @@ export default function EmployeePortal() {
 
   const handleMarkComplete = async (action: PortalAction) => {
     if (!employee) return;
-    const table = action.priority === 'high' ? 'portal_required_action_completions' : 'portal_action_completions';
     try {
-      const { error } = await supabase.from(table).insert({
+      const { error } = await supabase.from('portal_action_completions').insert({
         action_id: action.id,
-        employee_fk: employee.id,  // UUID, not employee_id_ref
+        employee_id: employee.id,  // UUID, not employee_id_ref
         email: employee.email,
         first_name: employee.first_name,
         last_name: employee.last_name,
@@ -407,7 +289,6 @@ export default function EmployeePortal() {
       await logActivity('action_completed', {
         action_title: action.title,
         action_id: action.id,
-        employee_fk: employee.id,
         employee_name: `${employee.first_name} ${employee.last_name}`,
         employee_email: employee.email,
         completed_at: new Date().toISOString()
@@ -416,6 +297,110 @@ export default function EmployeePortal() {
       setExpandedAction(null);
     } catch (err) {
       console.error('Error marking complete:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (currentAssignment && currentAssignment.week_start) {
+      fetchRoster();
+    }
+  }, [currentAssignment, jobsites]);
+
+  const fetchRoster = async () => {
+    if (!currentAssignment || !employee) return;
+    
+    setLoadingRoster(true);
+    try {
+      const weekStart = currentAssignment.week_start;
+      const assignedSiteIds = currentAssignment.assignment_items?.map(item => item.jobsite_fk).filter(Boolean) || [];
+      
+      if (assignedSiteIds.length === 0) {
+        setRoster([]);
+        return;
+      }
+
+      // Expand siteIds to include all sites in the same groups for a full crew view
+      const groupIds = jobsites.filter(j => assignedSiteIds.includes(j.id)).map(j => j.group_id).filter(Boolean);
+      const expandedSiteIds = [...new Set([
+        ...assignedSiteIds,
+        ...jobsites.filter(j => j.group_id && groupIds.includes(j.group_id)).map(j => j.id)
+      ])];
+
+      // 1. Get all assignment_weeks for the same week that have an item in expandedSiteIds
+      const { data: assignments, error: assignError } = await supabase
+        .from('assignment_weeks')
+        .select(`
+          employee_fk,
+          assignment_items!inner(
+            jobsite_fk
+          )
+        `)
+        .eq('week_start', weekStart)
+        .in('assignment_items.jobsite_fk', expandedSiteIds);
+
+      if (assignError) throw assignError;
+
+      const assignedEmpIds = new Set((assignments || []).map(a => a.employee_fk).filter(Boolean));
+
+      if (assignedEmpIds.size === 0) {
+        setRoster([]);
+        return;
+      }
+
+      // 2. Get all employees for these IDs
+      const { data: empData, error: empError } = await supabase
+        .from('employees')
+        .select('id, first_name, last_name, role, email')
+        .in('id', Array.from(assignedEmpIds))
+        .eq('is_active', true);
+
+      if (empError) throw empError;
+
+      // 3. Process and filter by primary roles
+      const processedRoster = (empData || [])
+        .filter(emp => {
+          const rawRole = emp.role?.toLowerCase() || '';
+          const normalizedRole = rawRole.replace(/_/g, ' ');
+          return ['site manager', 'site lead', 'bess tech'].includes(normalizedRole);
+        })
+        .map(emp => {
+          // Find all sites this employee is assigned to this week
+          const empAssignments = assignments?.filter(a => a.employee_fk === emp.id) || [];
+          const siteIds = empAssignments.flatMap(a => 
+            (a.assignment_items || []).map((item: any) => item.jobsite_fk)
+          ).filter(Boolean);
+          
+          const siteNames = siteIds.map(id => {
+            const site = jobsites.find(js => js.id === id);
+            return site?.jobsite_alias || site?.jobsite_name;
+          }).filter(Boolean);
+
+          return {
+            ...emp,
+            role: emp.role?.replace(/_/g, ' '), // Replace underscores with spaces
+            sites: [...new Set(siteNames)],
+            siteIds: [...new Set(siteIds)]
+          };
+        });
+
+      const roleOrder: Record<string, number> = {
+        'site manager': 1,
+        'site lead': 2,
+        'bess tech': 3
+      };
+
+      const sortedRoster = processedRoster.sort((a, b) => {
+        const roleA = roleOrder[a.role?.toLowerCase()] || 99;
+        const roleB = roleOrder[b.role?.toLowerCase()] || 99;
+        if (roleA !== roleB) return roleA - roleB;
+        return `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`);
+      });
+
+      setRoster(sortedRoster);
+    } catch (err) {
+      console.error('Unexpected error fetching roster:', err);
+    } finally {
+      setLoadingRoster(false);
     }
   };
 
@@ -554,11 +539,11 @@ export default function EmployeePortal() {
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-bold text-white">Required Actions</h2>
                   <span className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-gray-500">
-                    {requiredActions.length}
+                    {portalActions.filter(a => a.type === 'required_action').length}
                   </span>
                 </div>
                 <div className="space-y-3">
-                  {requiredActions.map(action => {
+                  {portalActions.filter(a => a.type === 'required_action').map(action => {
                     const isCompleted = myCompletions.includes(action.id);
                     const isExpanded = expandedAction === action.id;
                     return (
@@ -628,8 +613,8 @@ export default function EmployeePortal() {
               </div>
             </div>
 
-            {/* Middle Row: Performance Pulse, Assignment & Quick Actions */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Middle Row: Performance Pulse, Assignment, Roster & Quick Actions */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <PerformancePulseTile targetId={employee?.id || ''} />
 
               <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
@@ -647,7 +632,7 @@ export default function EmployeePortal() {
 
                 {currentAssignment ? (
                   <>
-                    <div className="grid grid-cols-1 gap-4 mb-8">
+                    <div className="grid grid-cols-1 gap-4">
                       <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
                         <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Assignment</span>
                         <p className="text-sm font-bold text-white truncate">
@@ -661,11 +646,97 @@ export default function EmployeePortal() {
                         <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Customer</span>
                         <p className="text-sm font-bold text-white truncate">{currentCustomer || 'N/A'}</p>
                       </div>
+                      <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                        <span className="text-[10px] uppercase font-bold text-gray-500 block mb-1">Site Team</span>
+                        <div className="flex flex-col gap-1">
+                          {roster.some(m => m.role?.toLowerCase() === 'site manager') ? (
+                            roster.filter(m => m.role?.toLowerCase() === 'site manager').map(m => (
+                              <p key={m.id} className="text-xs font-bold text-purple-400 truncate">Manager: {m.first_name} {m.last_name}</p>
+                            ))
+                          ) : (
+                            <p className="text-xs text-gray-600 italic">No Manager assigned</p>
+                          )}
+                          {roster.some(m => m.role?.toLowerCase() === 'site lead') ? (
+                            roster.filter(m => m.role?.toLowerCase() === 'site lead').map(m => (
+                              <p key={m.id} className="text-xs font-bold text-blue-400 truncate">Lead: {m.first_name} {m.last_name}</p>
+                            ))
+                          ) : (
+                            <p className="text-xs text-gray-600 italic">No Lead assigned</p>
+                          )}
+                          {roster.some(m => m.role?.toLowerCase() === 'bess tech') ? (
+                            roster.filter(m => m.role?.toLowerCase() === 'bess tech').map(m => (
+                              <p key={m.id} className="text-xs font-bold text-emerald-400 truncate">Tech: {m.first_name} {m.last_name}</p>
+                            ))
+                          ) : (
+                            <p className="text-xs text-gray-600 italic">No Tech assigned</p>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </>
                 ) : (
                   <div className="h-32 flex items-center justify-center text-gray-600 italic border border-dashed border-white/10 rounded-2xl text-xs">No active assignment found.</div>
                 )}
+              </div>
+
+              <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h2 className="text-xl font-bold text-white">Crew Roster</h2>
+                    <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Working with you</p>
+                  </div>
+                  <div className="px-3 py-1 bg-white/5 rounded-lg text-[10px] font-bold text-gray-500">
+                    {roster.length} members
+                  </div>
+                </div>
+
+                <div className="space-y-4 max-h-[180px] overflow-y-auto pr-2 custom-scrollbar">
+                  {loadingRoster ? (
+                    <div className="flex items-center justify-center py-8">
+                      <RefreshCw className="text-emerald-500 animate-spin" size={20} />
+                    </div>
+                  ) : roster.length > 0 ? (
+                    roster.map(member => (
+                      <div key={member.id} className={`flex items-center gap-3 p-3 rounded-2xl border ${member.id === employee?.id ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-white/5 border-white/5'}`}>
+                        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-500 shrink-0 overflow-hidden">
+                          <span className="text-xs font-bold">{member.first_name[0]}{member.last_name[0]}</span>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-bold text-white truncate">{member.first_name} {member.last_name}</p>
+                            {member.role?.toLowerCase() === 'site manager' && (
+                              <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 text-[8px] font-bold uppercase rounded border border-purple-500/20">Manager</span>
+                            )}
+                            {member.role?.toLowerCase() === 'site lead' && (
+                              <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 text-[8px] font-bold uppercase rounded border border-blue-500/20">Lead</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-[10px] text-emerald-500/70 uppercase tracking-wider truncate">{member.role}</p>
+                            {member.sites && member.sites.length > 0 && (
+                              <>
+                                <span className="text-gray-700 text-[10px]">•</span>
+                                <p className="text-[10px] text-gray-500 truncate italic">{member.sites.join(', ')}</p>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setActiveTab('chat')}
+                          className="p-2 bg-white/5 hover:bg-emerald-500 hover:text-black rounded-xl border border-white/5 transition-all shrink-0"
+                          title="Message in Crew Chat"
+                        >
+                          <MessageSquare size={14} />
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="h-32 flex flex-col items-center justify-center text-gray-600 italic border border-dashed border-white/10 rounded-2xl text-[10px] text-center px-4">
+                      <Construction size={20} className="mb-2 opacity-20" />
+                      No other crew members assigned to your site this week.
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="bg-[#0A120F] border border-white/5 rounded-3xl p-8">
@@ -691,9 +762,21 @@ export default function EmployeePortal() {
                 animate={{ opacity: 1, y: 0 }}
                 className="grid grid-cols-1 gap-6"
               >
-                {groupJobsites.map((jobsite) => (
-                  <JobsiteInfoCard key={jobsite.id} jobsite={jobsite} title={`Jobsite Details: ${jobsite.jobsite_name}`} />
-                ))}
+                {groupJobsites.map((jobsite) => {
+                  // Find manager assigned to this specific site or any site in the same group
+                  const siteManager = roster.find(m => 
+                    m.role?.toLowerCase() === 'site manager' && 
+                    (m.siteIds?.includes(jobsite.id) || (jobsite.group_id && m.siteIds?.some(id => jobsites.find(js => js.id === id)?.group_id === jobsite.group_id)))
+                  );
+                  return (
+                    <JobsiteInfoCard 
+                      key={jobsite.id} 
+                      jobsite={jobsite} 
+                      title={`Jobsite Details: ${jobsite.jobsite_name}`} 
+                      currentManager={siteManager ? `${siteManager.first_name} ${siteManager.last_name}` : undefined}
+                    />
+                  );
+                })}
               </motion.div>
             )}
 
@@ -770,7 +853,11 @@ export default function EmployeePortal() {
 
         {activeTab === 'map' && (
           <motion.div key="map" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}>
-            <MapPortal jobsites={filteredJobsites} jobsiteGroups={jobsiteGroups} />
+            <MapPortal 
+              jobsites={groupJobsites.length > 0 ? groupJobsites : filteredJobsites} 
+              jobsiteGroups={jobsiteGroups} 
+              currentEmployeeId={employee?.id}
+            />
           </motion.div>
         )}
 
@@ -794,8 +881,9 @@ export default function EmployeePortal() {
             </div>
 
             <div className="space-y-12">
-              {Array.from(new Set(portalActions.map(a => a.category))).map(category => {
+              {Array.from(new Set(portalActions.filter(a => a.type === 'greenergy_link').map(a => a.category))).map(category => {
                 const categoryLinks = portalActions.filter(a => 
+                  a.type === 'greenergy_link' &&
                   a.category === category && 
                   (a.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
                    a.description.toLowerCase().includes(searchQuery.toLowerCase()))

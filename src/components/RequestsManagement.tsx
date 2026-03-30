@@ -15,7 +15,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { logActivity } from '../lib/logger';
-import { handlePortalRequestApprovalBackend } from '../lib/supabase_functions';
 import { format } from 'date-fns';
 import { sendNotification } from '../utils/notifications';
 
@@ -90,20 +89,23 @@ export default function RequestsManagement({ canApprove = true }: { canApprove?:
         .eq('auth_user_id', user.id)
         .maybeSingle();
 
-      if (!admin) throw new Error('Admin profile not found');
+      const updateData: any = {
+        status: action,
+        approver_fk: admin?.id,
+        approved_at: new Date().toISOString()
+      };
+      if (jobsite) updateData.requested_jobsite = jobsite;
+      if (reason) updateData.deny_reason = reason;
 
-      // Use backend function to handle approval/denial and schedule updates
-      await handlePortalRequestApprovalBackend(
-        request.id,
-        admin.id,
-        action,
-        jobsite // This is the jobsite ID or name depending on how the backend handles it
-      );
+      const { data: updatedData, error: updateError } = await supabase
+        .from('portal_requests')
+        .update(updateData)
+        .eq('id', request.id)
+        .select();
 
-      // If it's a denial with a reason, we still need to update the reason field 
-      // (or update the backend function to accept it)
-      if (action === 'denied' && reason) {
-        await supabase.from('portal_requests').update({ deny_reason: reason }).eq('id', request.id);
+      if (updateError) throw updateError;
+      if (!updatedData || updatedData.length === 0) {
+        throw new Error('No rows updated. Check RLS policies.');
       }
 
       // Send notification to employee
@@ -122,15 +124,129 @@ export default function RequestsManagement({ canApprove = true }: { canApprove?:
         });
       }
 
-      // Log the action
-      logActivity(action === 'approved' ? 'request_approved' : 'request_denied', {
-        request_id: request.id,
-        employee_fk: request.employee_fk,
-        employee: `${request.employee?.first_name} ${request.employee?.last_name}`,
-        type: request.request_type,
-        dates: `${request.start_date} to ${request.end_date}`
-      });
+      // If approved and it's a time off or vacation request, update assignments
+      if (action === 'approved' && (request.request_type === 'time_off' || request.request_type === 'vacation')) {
+        const start = new Date(request.start_date);
+        const end = new Date(request.end_date);
+        
+        // Find all Monday week starts between start and end
+        const weekStarts: string[] = [];
+        let current = new Date(start);
+        // Adjust to Monday if not already
+        const day = current.getDay();
+        const diff = current.getDate() - day + (day === 0 ? -6 : 1);
+        current.setDate(diff);
+
+        while (current <= end) {
+          if (current >= start) {
+            weekStarts.push(format(current, 'yyyy-MM-dd'));
+          }
+          current.setDate(current.getDate() + 7);
+        }
+
+        if (weekStarts.length > 0 && request.employee) {
+          // For each week, update or insert an assignment as "working" and add "Vacation" or "Time Off" to assignment_items
+          await supabase.rpc('set_audit_reason', { reason: 'request_approval_time_off_vacation' });
+          for (const weekStart of weekStarts) {
+            // Upsert assignment_weeks
+            const { data: week, error: upsertError } = await supabase
+              .from('assignment_weeks')
+              .upsert({
+                employee_fk: request.employee.id,
+                week_start: weekStart,
+                assignment_name: request.request_type === 'vacation' ? 'Vacation' : 'Time Off',
+                status: 'assigned'
+              }, {
+                onConflict: 'employee_fk,week_start'
+              })
+              .select('id')
+              .single();
+            
+            if (upsertError) {
+              console.error('Error upserting assignment_week:', upsertError);
+              continue;
+            }
+
+            // Delete existing items and insert new one
+            await supabase.from('assignment_items').delete().eq('assignment_week_id', week.id);
+            await supabase.from('assignment_items').insert({
+              assignment_week_id: week.id,
+              jobsite_name: request.request_type === 'vacation' ? 'Vacation' : 'Time Off',
+              days: 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'
+            });
+          }
+        }
+
+        // Log the approval
+        logActivity('request_approved', {
+          request_id: request.id,
+          employee: `${request.employee?.first_name} ${request.employee?.last_name}`,
+          type: request.request_type,
+          dates: `${request.start_date} to ${request.end_date}`,
+          weeks_affected: weekStarts.length
+        });
+      } else if (action === 'denied') {
+        logActivity('request_denied', {
+          request_id: request.id,
+          employee: `${request.employee?.first_name} ${request.employee?.last_name}`,
+          type: request.request_type
+        });
+      }
       
+      // Handle rotation change approval
+      if (action === 'approved' && request.request_type === 'rotation_change') {
+        const { data: assignments, error: assignError } = await supabase
+          .from('assignment_weeks')
+          .select('*')
+          .eq('employee_fk', request.employee?.id)
+          .in('week_start', [request.requested_week_start, request.target_week_start]);
+
+        if (assignError) throw assignError;
+
+        const requestedWeek = assignments?.find(a => a.week_start === request.requested_week_start);
+        const targetWeek = assignments?.find(a => a.week_start === request.target_week_start);
+
+        if (requestedWeek && targetWeek) {
+          // Swap assignment_name and status
+          const tempName = requestedWeek.assignment_name;
+          const tempStatus = requestedWeek.status;
+          await supabase.from('assignment_weeks').update({ assignment_name: targetWeek.assignment_name, status: targetWeek.status }).eq('id', requestedWeek.id);
+          await supabase.from('assignment_weeks').update({ assignment_name: tempName, status: tempStatus }).eq('id', targetWeek.id);
+          
+          // If admin provided a jobsite, update the requested week (which was rotation)
+          let finalJobsite = targetWeek.assignment_name;
+          if (jobsite) {
+             finalJobsite = jobsite;
+             if (jobsite.startsWith('group:')) {
+               const groupName = jobsite.split(':')[1];
+               const { data: groupJobsites } = await supabase.from('jobsites').select('jobsite_name').eq('jobsite_group', groupName).eq('is_active', true);
+               if (groupJobsites && groupJobsites.length > 0) {
+                 finalJobsite = groupJobsites[0].jobsite_name;
+               }
+             }
+             await supabase.from('assignment_weeks').update({ assignment_name: finalJobsite, status: 'assigned' }).eq('id', requestedWeek.id);
+          }
+
+          // Send standard assignment change notification
+          const weeksUntil = Math.max(0, Math.round((new Date(request.requested_week_start).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
+          const portalMessage = `Update Type: Assignment Change\r\nEmployee: ${request.employee?.first_name} ${request.employee?.last_name}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: ${request.requested_week_start}\r\nPrevious Assignment: ${tempName}\r\nNew Assignment: ${finalJobsite}\r\nDays: Mon, Tue, Wed, Thu, Fri, Sat, Sun\r\nWeeks Until New Assignment: ${weeksUntil}`;
+
+          await sendNotification({
+            employeeId: request.employee.id,
+            title: 'Assignment Change',
+            message: portalMessage,
+            type: 'info',
+            sendEmail: true,
+            emailData: {
+              updateType: 'Assignment Change',
+              jobsiteName: finalJobsite,
+              weekStartDate: request.requested_week_start,
+              customEmailBody: portalMessage
+            }
+          });
+        }
+      }
+
       await fetchRequests();
     } catch (err) {
       console.error(`Error ${action} request:`, err);

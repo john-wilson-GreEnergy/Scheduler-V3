@@ -3,7 +3,16 @@ ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.jobsites ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.assignment_weeks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.assignment_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.portal_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.jobsite_groups ENABLE ROW LEVEL SECURITY;
+
+-- Policies for jobsite_groups table
+CREATE POLICY "Admin/Super Admin full access on jobsite_groups" ON public.jobsite_groups
+  FOR ALL TO authenticated
+  USING (get_user_role(auth.uid()) IN ('admin', 'super_admin'));
+
+CREATE POLICY "Site Manager/Lead read jobsite_groups" ON public.jobsite_groups
+  FOR SELECT TO authenticated
+  USING (get_user_role(auth.uid()) IN ('site_manager', 'site_lead'));
 
 -- Helper function to get user role
 CREATE OR REPLACE FUNCTION public.get_user_role(user_id uuid)
@@ -42,8 +51,8 @@ CREATE POLICY "Admin/Super Admin full access on assignment_weeks" ON public.assi
   FOR ALL TO authenticated
   USING (get_user_role(auth.uid()) IN ('admin', 'super_admin'));
 
-CREATE POLICY "Site Manager/Lead read assignment_weeks" ON public.assignment_weeks
-  FOR SELECT TO authenticated
+CREATE POLICY "Site Manager/Lead full access assignment_weeks" ON public.assignment_weeks
+  FOR ALL TO authenticated
   USING (get_user_role(auth.uid()) IN ('site_manager', 'site_lead'));
 
 CREATE POLICY "BESS Tech read own assignment_weeks" ON public.assignment_weeks
@@ -51,5 +60,38 @@ CREATE POLICY "BESS Tech read own assignment_weeks" ON public.assignment_weeks
   USING (EXISTS (
     SELECT 1 FROM public.employees e
     WHERE e.id = assignment_weeks.employee_fk
+    AND e.auth_user_id = auth.uid()
+-- Policies for assignment_items table
+CREATE POLICY "Admin/Super Admin full access on assignment_items" ON public.assignment_items
+  FOR ALL TO authenticated
+  USING (get_user_role(auth.uid()) IN ('admin', 'super_admin'));
+
+CREATE POLICY "Site Manager/Lead full access assignment_items" ON public.assignment_items
+  FOR ALL TO authenticated
+  USING (get_user_role(auth.uid()) IN ('site_manager', 'site_lead'));
+
+CREATE POLICY "BESS Tech read own assignment_items" ON public.assignment_items
+  FOR SELECT TO authenticated
+  USING (EXISTS (
+    SELECT 1 FROM public.assignment_weeks aw
+    JOIN public.employees e ON aw.employee_fk = e.id
+    WHERE aw.id = assignment_items.assignment_week_fk
+    AND e.auth_user_id = auth.uid()
+  ));
+
+-- Policies for portal_requests table
+CREATE POLICY "Admin/Super Admin full access on portal_requests" ON public.portal_requests
+  FOR ALL TO authenticated
+  USING (get_user_role(auth.uid()) IN ('admin', 'super_admin'));
+
+CREATE POLICY "Site Manager/Lead full access portal_requests" ON public.portal_requests
+  FOR ALL TO authenticated
+  USING (get_user_role(auth.uid()) IN ('site_manager', 'site_lead'));
+
+CREATE POLICY "BESS Tech full access own portal_requests" ON public.portal_requests
+  FOR ALL TO authenticated
+  USING (EXISTS (
+    SELECT 1 FROM public.employees e
+    WHERE e.id = portal_requests.employee_fk
     AND e.auth_user_id = auth.uid()
   ));

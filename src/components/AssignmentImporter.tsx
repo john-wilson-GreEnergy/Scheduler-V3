@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { AssignmentWeek, AssignmentItem } from '../types';
 import { sendNotification } from '../utils/notifications';
 
-export const AssignmentImporter: React.FC = () => {
+export const AssignmentImporter: React.FC<{ onImportComplete?: () => void }> = ({ onImportComplete }) => {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,157 +45,111 @@ export const AssignmentImporter: React.FC = () => {
   const syncData = async () => {
     setLoading(true);
     try {
-      const { data: employees } = await supabase.from('employees').select('id, email, first_name, last_name');
-      const { data: jobsites } = await supabase.from('jobsites').select('id, jobsite_name, group_id');
-      const { data: jobsiteGroups } = await supabase.from('jobsite_groups').select('id, name');
+      const { data: employees } = await supabase.from('employees').select('id, first_name, last_name, email');
+      const { data: jobsites } = await supabase.from('jobsites').select('id, jobsite_name');
 
-      const dataRows = preview.slice(5); // Row 6 onwards
+      // Mapping objects for normalization
+      const NAME_MAPPING: Record<string, string> = {
+        "Blake Horton": "Blake Horton",
+        "Ivan Lopez": "Ivan Lopez",
+        "Stephen Vela": "Stephen Vela",
+        "Kade Murphy": "Kade Murphy",
+        "Vincent Baptiste": "Vincent Baptiste",
+        "Trenton Ward": "Trenton Ward",
+        "Andrew Rossi": "Andrew Rossi",
+        "Raul Portillo": "Raul Portillo",
+        "Kwatayvous Blackwell": "Kwatayvous Blackwell",
+        "Jonathan Davis": "Jonathan Davis",
+        "Takarius Floyd": "Takarius Floyd"
+      };
+      const JOB_SITE_MAPPING: Record<string, string> = {
+        "LG - ACIR": "LG ACIR",
+        "Willow Springs/ Chaparral": "Willow Springs/ Chaparral",
+        "YUMA": "Yuma",
+        "Idaho Power": "Idaho Power",
+        "Oklahoma Foothills": "Oklahoma Foothills",
+        "Sunstreams": "Sunstreams",
+        "Solar Star": "Solar Star",
+        "SMA Training": "SMA Training",
+        "FSS Training": "FSS Training",
+        "Lonestar": "Lone Star",
+        "Slocum/ Training": "Slocum",
+        "Idaho Power/V": "Idaho Power",
+        "Slocum/ Solar Star": "Slocum",
+        "Mav6/Solar Star": "Mav6",
+        "Dark & Stormy": "Dark & Stormy",
+        "CleanPower": "CleanPower",
+        "Invenergy": "Invenergy",
+        "APS": "APS",
+        "Ravenswood/ Slocum": "Ravenswood",
+        "Slocum/ Ravenswood": "Slocum",
+        "Poblano/ DQ": "Poblano",
+        "Solar Star/ Hummingbird": "Solar Star",
+        "AVEP/ Arrow Canyon": "AVEP",
+        "Santa Paula/ Solar Star": "Santa Paula",
+        "Johanna": "Johanna",
+        "DQ/TRAVEL": "Desert Quartzite",
+        "Sungrow/ Sunstreams": "Sunstreams",
+        "Oklahoma Landon": "Oklahoma Landon",
+        "Ravenswood/ Oak Hill": "Ravenswood",
+        "Countryside/ Ravenswood": "Countryside",
+        "Countryside/Ravenswood": "Countryside",
+        "KCE/ Ravenswood": "KCE"
+      };
+
       const dateRow = preview[4]; // Row 5
+      const dataRows = preview.slice(5, 81); // Rows 6 to 81
 
-      // Fetch existing data for deduplication
-      const { data: existingWeeks } = await supabase.from('assignment_weeks').select('id, employee_fk, week_start');
-      const { data: existingItems } = await supabase.from('assignment_items').select('assignment_week_fk, jobsite_fk');
-      
-      const existingAssignments = new Set(
-        existingItems?.map(item => `${item.assignment_week_fk}:${item.jobsite_fk}`) || []
-      );
-
-      const itemsToInsert = [];
+      const plannedAssignments: any[] = [];
 
       for (const row of dataRows) {
-        const employeeEmail = row[4]; // Column E - Email
-        const employee = employees?.find(e => e.email?.toLowerCase() === employeeEmail?.toLowerCase());
-        if (!employee) continue;
+        const rawName = row[4]; // Column E
+        if (!rawName) continue;
+
+        const normalizedName = NAME_MAPPING[rawName] || rawName;
+        const employee = employees?.find(e => 
+          `${e.first_name} ${e.last_name}`.toLowerCase() === normalizedName.toLowerCase() ||
+          e.email?.toLowerCase() === normalizedName.toLowerCase()
+        );
+        if (!employee) {
+          console.warn(`Employee not found: ${normalizedName}`);
+          continue;
+        }
 
         for (let i = 6; i < row.length; i++) { // Column G onwards
           const assignmentName = row[i];
-          if (!assignmentName) continue;
+          if (!assignmentName || assignmentName === '-') continue;
 
           const weekStart = dateRow[i];
           if (!weekStart) continue;
 
-          const assignmentNames = assignmentName.split('/').map((n: string) => n.trim());
+          const normalizedJobsite = JOB_SITE_MAPPING[assignmentName] || assignmentName;
+          const jobsite = jobsites?.find(j => j.jobsite_name === normalizedJobsite);
 
-          for (const name of assignmentNames) {
-            const normalizedName = name.replace(/\s+/g, ' ').trim();
-            const jobsite = jobsites?.find(j => j.jobsite_name.replace(/\s+/g, ' ').trim() === normalizedName);
-            const group = jobsiteGroups?.find(g => g.name.replace(/\s+/g, ' ').trim() === normalizedName);
-            const targetJobsites = group 
-              ? jobsites?.filter(j => j.group_id === group.id)
-              : (jobsite ? [jobsite] : []);
-
-            console.log('Processing assignment:', name, 'Normalized:', normalizedName, 'Week:', weekStart);
-            console.log('Found jobsite:', jobsite?.jobsite_name, 'Found group:', group?.name, 'Target count:', targetJobsites.length);
-            
-            if (targetJobsites.length > 0) {
-              console.log('Found target jobsites:', targetJobsites.length);
-              console.log('Attempting upsert for employee:', employee.id, 'week_start:', weekStart);
-              const { data: weekData, error: weekError } = await supabase
-                .from('assignment_weeks')
-                .upsert({
-                  employee_fk: employee.id,
-                  week_start: weekStart,
-                  status: 'active',
-                  assignment_type: targetJobsites[0].jobsite_name
-                }, { onConflict: 'employee_fk, week_start' })
-                .select('id, week_start')
-                .single();
-
-              if (weekError) {
-                console.error('Error upserting assignment_week:', weekError);
-              } else {
-                console.log('Upserted assignment_week:', weekData);
-              }
-
-              if (weekData) {
-                console.log('Successfully upserted weekData:', weekData);
-                for (const site of targetJobsites) {
-                  const assignmentKey = `${weekData.id}:${site.id}`;
-                  if (!existingAssignments.has(assignmentKey)) {
-                    console.log('Adding item to insert:', assignmentKey, 'for site:', site.jobsite_name);
-                    itemsToInsert.push({
-                      assignment_week_fk: weekData.id,
-                      jobsite_fk: site.id,
-                      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-                      item_order: 1
-                    });
-                    
-                    // Store metadata for notification logic (not for DB insertion)
-                    (itemsToInsert[itemsToInsert.length - 1] as any)._meta = {
-                      employee_fk: employee.id,
-                      employee_name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || employee.email,
-                      week_start: weekData.week_start,
-                      assignment_type: site.jobsite_name
-                    };
-
-                    existingAssignments.add(assignmentKey); // Prevent duplicates in same batch
-                  } else {
-                    console.log('Assignment item already exists, skipping:', assignmentKey);
-                  }
-                }
-              } else {
-                console.error('weekData is null after upsert, cannot add assignment items.');
-              }
-            } else {
-              console.log('No target jobsites found for:', normalizedName);
-              console.warn('No target jobsites found for assignment:', name);
-            }
-          }
-        }
-      }
-
-      if (itemsToInsert.length > 0) {
-        console.log('Attempting to insert assignment_items:', itemsToInsert);
-        // Strip _meta before insertion
-        const dbItems = itemsToInsert.map(({ _meta, ...rest }: any) => rest);
-        const { error: insertError } = await supabase.from('assignment_items').insert(dbItems);
-        if (insertError) {
-          console.error('Error inserting assignment_items:', insertError);
-        } else {
-          console.log('Successfully inserted assignment_items');
-          
-          // Send notifications for imported assignments
-          const employeeAssignments = new Map<string, any[]>();
-          itemsToInsert.forEach((item: any) => {
-            const meta = item._meta;
-            if (meta && meta.employee_fk) {
-              if (!employeeAssignments.has(meta.employee_fk)) {
-                employeeAssignments.set(meta.employee_fk, []);
-              }
-              employeeAssignments.get(meta.employee_fk)?.push({
-                weekStart: meta.week_start,
-                jobsiteName: meta.assignment_type,
-                employeeName: meta.employee_name
-              });
-            }
-          });
-
-          for (const [empId, assignments] of employeeAssignments.entries()) {
-            const portalMessage = assignments.map(a => {
-              const weeksUntil = Math.max(0, Math.round((new Date(a.weekStart).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24 * 7)));
-              return `Update Type: Assignment Change\r\nEmployee: ${a.employeeName}\r\nDate Updated: ${new Date().toISOString().split('T')[0]}\r\nWork Week: ${a.weekStart}\r\nPrevious Assignment: None\r\nNew Assignment: ${a.jobsiteName}\r\nDays: Mon, Tue, Wed, Thu, Fri, Sat, Sun\r\nWeeks Until New Assignment: ${weeksUntil}`;
-            }).join('\r\n\r\n');
-
-            await sendNotification({
-              employeeId: empId,
-              title: 'Assignment Change',
-              message: portalMessage,
-              type: 'info',
-              sendEmail: true,
-              emailData: {
-                updateType: 'Assignment Change',
-                jobsiteName: assignments[0].jobsiteName,
-                weekStartDate: assignments[0].weekStart,
-                customEmailBody: portalMessage
-              }
+          if (jobsite) {
+            plannedAssignments.push({
+              employee_fk: employee.id,
+              week_start: new Date(weekStart).toISOString().split('T')[0],
+              assignment_type: jobsite.jobsite_name,
+              target_jobsites: [{
+                jobsite_fk: jobsite.id,
+                days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+              }]
             });
+          } else {
+            console.warn(`Jobsite not found: ${assignmentName} (Normalized: ${normalizedJobsite})`);
           }
         }
-      } else {
-        console.log('No assignment_items to insert.');
       }
 
-      alert(`Sync complete! ${itemsToInsert.length} new assignments added.`);
+      // Call the SQL RPC function
+      const { error: rpcError } = await supabase
+        .rpc('import_assignments', { assignment_data: plannedAssignments });
+      
+      if (rpcError) throw rpcError;
+
+      alert(`Sync complete! ${plannedAssignments.length} assignments processed.`);
+      if (onImportComplete) onImportComplete();
     } catch (error) {
       console.error(error);
       alert('Error during sync. Check console.');

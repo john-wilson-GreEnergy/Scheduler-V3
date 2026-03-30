@@ -14,26 +14,24 @@ export interface Announcement {
 export interface AssignmentWeek {
   id: string;
   employee_fk: string;
+  email?: string;
   week_start: string;
   status: string;
+  assignment_name?: string;
   assignment_type?: string;
-  created_at?: string;
+  created_at: string;
   assignment_items?: AssignmentItem[];
 }
 
 export interface AssignmentItem {
   id: string;
-  assignment_week_fk?: string;
-  week_fk?: string;
+  assignment_week_fk: string;
   jobsite_fk: string;
-  employee_fk?: string;
-  day_of_week?: number;
-  is_active?: boolean;
-  days?: string[];
-  item_order?: number;
+  days: string[];
+  item_order: number;
   assignment_type?: string;
-  week_start?: string;
-  created_at?: string;
+  week_start: string;
+  created_at: string;
   jobsites?: Jobsite;
 }
 

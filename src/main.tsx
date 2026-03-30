@@ -5,18 +5,12 @@ import { AuthProvider } from './contexts/AuthContext';
 import App from './App.tsx';
 import './index.css';
 import { registerSW } from 'virtual:pwa-register';
-import { Capacitor } from '@capacitor/core';
 
 console.log('⚡️ ⚡️ ⚡️ MAIN_V11_LOADED ⚡️ ⚡️ ⚡️');
-console.log('⚡️ Platform:', Capacitor.getPlatform());
 
-// Only register service worker if NOT on a native platform
-if (!Capacitor.isNativePlatform()) {
-  console.log('⚡️ Registering PWA Service Worker...');
-  registerSW({ immediate: true });
-} else {
-  console.log('⚡️ Native platform detected, skipping PWA Service Worker.');
-}
+// Register service worker for PWA
+console.log('⚡️ Registering PWA Service Worker...');
+registerSW({ immediate: true });
 
 const rootElement = document.getElementById('root');
 

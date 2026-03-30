@@ -6,7 +6,7 @@ import {
   RefreshCw, MapPin, Users, Calendar, 
   Building2, Search, BarChart3, Info,
   ExternalLink, Map as MapIcon, ShieldCheck, Shield,
-  ArrowUpDown
+  ArrowUpDown, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Employee, Jobsite, AssignmentWeek, RotationConfig, JobsiteGroup } from '../types';
@@ -26,8 +26,8 @@ export default function HRPortal() {
   const [assignments, setAssignments] = useState<AssignmentWeek[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [jobsiteSearchQuery, setJobsiteSearchQuery] = useState('');
-  const [sortByStaffed, setSortByStaffed] = useState(false);
-  const [sortByManpower, setSortByManpower] = useState(false);
+  const [sortByStaffed, setSortByStaffed] = useState(true);
+  const [sortByManpower, setSortByManpower] = useState(true);
   const [selectedJobsite, setSelectedJobsite] = useState<Jobsite | null>(null);
   const [currentWeekStart] = useState<string>(format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd'));
 
@@ -63,17 +63,19 @@ export default function HRPortal() {
             employee_fk: row.employee_fk,
             status: row.status,
             assignment_type: row.assignment_type || row.jobsite_name,
+            created_at: new Date().toISOString(),
             assignment_items: []
           };
         }
         if (row.jobsite_fk) {
           groupedAssignments[row.employee_fk].assignment_items?.push({
             id: `item-${row.id}-${row.jobsite_fk}`,
-            week_fk: row.id,
+            assignment_week_fk: row.id,
             jobsite_fk: row.jobsite_fk,
-            employee_fk: row.employee_fk,
-            day_of_week: 1, // Default
-            is_active: true
+            days: row.days || [],
+            item_order: 0,
+            week_start: row.week_start,
+            created_at: new Date().toISOString()
           });
         }
       });
@@ -326,9 +328,9 @@ export default function HRPortal() {
                           </div>
                           <button 
                             onClick={() => setSelectedJobsite(site)}
-                            className="p-2 bg-white/5 hover:bg-emerald-500 hover:text-black rounded-xl transition-all"
+                            className="px-4 py-2 bg-white/5 hover:bg-emerald-500 hover:text-black rounded-xl transition-all text-xs font-bold uppercase tracking-wider"
                           >
-                            <Info size={18} />
+                            Roster
                           </button>
                         </div>
                       </div>
@@ -492,7 +494,7 @@ export default function HRPortal() {
                     </div>
                   </div>
                   <button onClick={() => setSelectedJobsite(null)} className="p-2 bg-white/5 hover:bg-white/10 rounded-xl transition-all">
-                    <RefreshCw size={20} className="rotate-45" />
+                    <X size={20} />
                   </button>
                 </div>
 

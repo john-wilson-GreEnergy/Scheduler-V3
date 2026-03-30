@@ -1,50 +1,27 @@
-import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
-import { Capacitor } from '@capacitor/core';
+export enum ImpactStyle {
+  Heavy = 'HEAVY',
+  Medium = 'MEDIUM',
+  Light = 'LIGHT',
+}
+
+export enum NotificationType {
+  Success = 'SUCCESS',
+  Warning = 'WARNING',
+  Error = 'ERROR',
+}
 
 export const haptics = {
-  impact: async (style: ImpactStyle = ImpactStyle.Light) => {
-    if (Capacitor.isNativePlatform()) {
-      try {
-        await Haptics.impact({ style });
-      } catch (e) {
-        console.warn('Haptics not available', e);
-      }
+  impact: (options?: { style: ImpactStyle }) => {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate(10);
     }
   },
-  notification: async (type: NotificationType = NotificationType.Success) => {
-    if (Capacitor.isNativePlatform()) {
-      try {
-        await Haptics.notification({ type });
-      } catch (e) {
-        console.warn('Haptics not available', e);
-      }
+  notification: (options?: { type: NotificationType }) => {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([10, 50, 10]);
     }
   },
-  selectionStart: async () => {
-    if (Capacitor.isNativePlatform()) {
-      try {
-        await Haptics.selectionStart();
-      } catch (e) {
-        console.warn('Haptics not available', e);
-      }
-    }
-  },
-  selectionChanged: async () => {
-    if (Capacitor.isNativePlatform()) {
-      try {
-        await Haptics.selectionChanged();
-      } catch (e) {
-        console.warn('Haptics not available', e);
-      }
-    }
-  },
-  selectionEnd: async () => {
-    if (Capacitor.isNativePlatform()) {
-      try {
-        await Haptics.selectionEnd();
-      } catch (e) {
-        console.warn('Haptics not available', e);
-      }
-    }
-  }
+  selectionStart: () => {},
+  selectionChanged: () => {},
+  selectionEnd: () => {},
 };

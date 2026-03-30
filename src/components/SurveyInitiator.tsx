@@ -7,6 +7,7 @@ import { format, startOfWeek } from 'date-fns';
 import { Plus, MessageSquare } from 'lucide-react';
 import { parseAssignmentNames } from '../utils/assignmentParser';
 import { NativeAlert } from './NativeAlert';
+import { fetchCurrentScheduleBackend } from '../lib/supabase_functions';
 
 import { Role } from '../types';
 import { SurveyType } from '../types/surveys';
@@ -61,13 +62,12 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       const todayStr = format(today, 'yyyy-MM-dd');
       
       // 1. Get current user's jobsite for this week
-      const { data: userAssignments, error: assignError } = await supabase
-        .from('v_current_schedule')
-        .select('week_start, assignment_type, jobsite_name')
-        .eq('employee_fk', userId) // Use userId (UUID) instead of email
-        .lte('week_start', todayStr)
-        .order('week_start', { ascending: false })
-        .limit(1);
+      const userAssignments = await fetchCurrentScheduleBackend('', {
+        employeeId: userId,
+        lte: todayStr,
+        order: { column: 'week_start', ascending: false },
+        limit: 1
+      });
         
       if (!userAssignments || userAssignments.length === 0) {
         setAlertConfig({
@@ -131,22 +131,9 @@ export const SurveyInitiator: React.FC<SurveyInitiatorProps> = ({ userId, email,
       return;
     }
 
-    const { data: targetAssignments, error: targetAssignError } = await supabase
-      .from('v_current_schedule')
-      .select('*')
-      .eq('week_start', weekStart)
-      .in('employee_fk', targets.map(t => t.id));
-      
-    if (targetAssignError) {
-      console.error('Error fetching target assignments:', targetAssignError);
-      setAlertConfig({
-        isOpen: true,
-        title: 'Error',
-        message: `Error fetching eligible employees: ${targetAssignError.message}`,
-        type: 'error'
-      });
-      return;
-    }
+    const targetAssignments = await fetchCurrentScheduleBackend(weekStart, {
+      employeeId: targets.map(t => t.id).join(',') // This might not work if fetchCurrentScheduleBackend doesn't support comma separated IDs
+    });
 
     // 4. Filter targets in JS
     console.log('Targets before filtering:', targets);

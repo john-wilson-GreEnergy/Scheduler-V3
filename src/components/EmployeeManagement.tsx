@@ -27,8 +27,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabase';
 import { logActivity } from '../lib/logger';
 import { format, parseISO, startOfWeek } from 'date-fns';
-import { syncEmployeeAssignmentsBackend } from '../lib/supabase_functions';
 import { sendNotification } from '../utils/notifications';
+import { generateAssignmentWeeksForEmployee } from '../utils/assignmentGenerator';
 
 interface EmployeeManagementProps {
   employees: Employee[];
@@ -143,11 +143,8 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
         .update({ rotation_group: null })
         .eq('id', editingRotation.id);
 
-      // Use backend to sync assignments based on new rotation config
-      await syncEmployeeAssignmentsBackend(editingRotation.id);
-
       logActivity('rotation_update', {
-        employee_fk: editingRotation.id,
+        employee_id: editingRotation.id,
         name: `${editingRotation.first_name} ${editingRotation.last_name}`,
         config: rotationForm
       });
@@ -196,12 +193,12 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
         console.log('Update error:', error);
         if (error) throw error;
         
-        // Reactivate: sync assignments from backend
+        // Reactivate: generate weeks from reactivation date if employee was inactive
         if (!editingEmployee.is_active) {
-            await syncEmployeeAssignmentsBackend(editingEmployee.id, rotationForm.anchor_date);
+            await generateAssignmentWeeksForEmployee(editingEmployee, 104, parseISO(rotationForm.anchor_date));
         }
         
-        logActivity('employee_update', { employee_fk: editingEmployee.id, ...payload });
+        logActivity('employee_update', { id: editingEmployee.id, ...payload });
       } else {
         const { data, error } = await supabase
           .from('employees')
@@ -209,11 +206,8 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
           .select();
         if (error) throw error;
         const newEmployee = data[0];
-        
-        // Use backend to generate initial assignments
-        await syncEmployeeAssignmentsBackend(newEmployee.id);
-        
-        logActivity('employee_create', { employee_fk: newEmployee.id, ...payload });
+        await generateAssignmentWeeksForEmployee(newEmployee);
+        logActivity('employee_create', payload);
       }
 
       setEditingEmployee(null);
@@ -237,7 +231,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       // 2. Delete future assignments
       await supabase.from('assignment_weeks').delete().eq('employee_fk', editingEmployee.id).gte('week_start', currentWeek);
       
-      logActivity('employee_remove', { employee_fk: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
+      logActivity('employee_remove', { id: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
       
       setEditingEmployee(null);
       onUpdate(true);
@@ -257,7 +251,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       // 2. Delete employee
       await supabase.from('employees').delete().eq('id', editingEmployee.id);
       
-      logActivity('employee_nuclear_delete', { employee_fk: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
+      logActivity('employee_nuclear_delete', { id: editingEmployee.id, name: `${editingEmployee.first_name} ${editingEmployee.last_name}` });
       
       setEditingEmployee(null);
       onUpdate(true);
@@ -338,7 +332,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
       
       const emp = employees.find(e => e.id === id);
       logActivity('employee_toggle', { 
-        employee_fk: id, 
+        employee_id: id, 
         name: `${emp?.first_name} ${emp?.last_name}`,
         new_status: newStatus 
       });
@@ -1026,11 +1020,7 @@ export default function EmployeeManagement({ employees: initialEmployees, onUpda
 
                       if (error) throw error;
 
-                      await logActivity('batch_update_roles', {
-                        employee_fks: selectedEmployeeIds,
-                        new_role: batchRole,
-                        count: selectedEmployeeIds.length
-                      });
+                      await logActivity('batch_update_roles', `Updated roles for ${selectedEmployeeIds.length} employees to ${batchRole}`);
                       onUpdate();
                       setIsBatchEditModalOpen(false);
                       setSelectedEmployeeIds([]);

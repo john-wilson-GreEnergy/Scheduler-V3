@@ -25,32 +25,47 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, addDays, startOfWeek } from 'date-fns';
+import { toast } from 'sonner';
 import { IconComponent } from './PortalComponents';
 
 export default function PortalContentManager() {
-  const [activeTab, setActiveTab] = useState<'all' | 'announcements' | 'actions' | 'links'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'announcements' | 'required_actions' | 'greenergy_links'>('all');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
-  const [actions, setActions] = useState<PortalAction[]>([]);
   const [requiredActions, setRequiredActions] = useState<PortalAction[]>([]);
+  const [greEnergyLinks, setGreEnergyLinks] = useState<PortalAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
   const [schedulingMode, setSchedulingMode] = useState<'custom' | 'weeks'>('custom');
   const [searchTerm, setSearchTerm] = useState('');
+  const [formRecurrenceType, setFormRecurrenceType] = useState<'none' | 'weekly' | 'monthly' | 'quarterly'>('none');
+  const [formPriority, setFormPriority] = useState<'high' | 'low'>('high');
+
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
-    const [annRes, actRes, reqRes] = await Promise.all([
-      supabase.from('announcements').select('*').order('created_at', { ascending: false }),
-      supabase.from('portal_actions').select('*').order('sort_order', { ascending: true }),
-      supabase.from('portal_required_actions').select('*').order('sort_order', { ascending: true })
-    ]);
+    try {
+      const [annRes, reqActRes, linksRes] = await Promise.all([
+        supabase.from('announcements').select('*').order('created_at', { ascending: false }),
+        supabase.from('portal_required_actions').select('*').order('sort_order', { ascending: true }),
+        supabase.from('greenergy_links').select('*').order('sort_order', { ascending: true })
+      ]);
 
-    if (annRes.data) setAnnouncements(annRes.data);
-    if (actRes.data) setActions(actRes.data);
-    if (reqRes.data) setRequiredActions(reqRes.data);
-    setLoading(false);
+      if (annRes.error) throw annRes.error;
+      if (reqActRes.error) throw reqActRes.error;
+      if (linksRes.error) throw linksRes.error;
+
+      if (annRes.data) setAnnouncements(annRes.data);
+      if (reqActRes.data) setRequiredActions(reqActRes.data);
+      if (linksRes.data) setGreEnergyLinks(linksRes.data);
+    } catch (err: any) {
+      console.error('Error fetching portal content:', err);
+      toast.error(`Failed to load content: ${err.message || 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -60,10 +75,23 @@ export default function PortalContentManager() {
   useEffect(() => {
     if (editingItem) {
       setSchedulingMode(editingItem.scheduling_mode || 'custom');
+      setFormRecurrenceType(editingItem.recurrence_type || 'none');
+      setFormPriority(editingItem.priority || (activeTab === 'greenergy_links' ? 'low' : 'high'));
     } else {
       setSchedulingMode('custom');
+      setFormRecurrenceType('none');
+      setFormPriority(activeTab === 'greenergy_links' ? 'low' : 'high');
     }
-  }, [editingItem]);
+  }, [editingItem, activeTab]);
+
+  const getTableFromType = (type: string) => {
+    switch (type) {
+      case 'announcement': return 'announcements';
+      case 'required_action': return 'portal_required_actions';
+      case 'greenergy_link': return 'greenergy_links';
+      default: return 'announcements';
+    }
+  };
 
   const handleSaveAnnouncement = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -80,9 +108,10 @@ export default function PortalContentManager() {
       end_date = format(addDays(startOfWeekDate, weeks * 7), 'yyyy-MM-dd');
     }
 
-    const data = {
+    const data: any = {
       title: formData.get('title') as string,
       message: formData.get('message') as string,
+      level: formData.get('level') as string || 'info',
       start_date: start_date || null,
       end_date: end_date || null,
       active: formData.get('active') === 'on',
@@ -93,29 +122,29 @@ export default function PortalContentManager() {
 
     try {
       if (editingItem) {
-        await supabase.from('announcements').update(data).eq('id', editingItem.id);
+        const { data: updated, error } = await supabase.from('announcements').update(data).eq('id', editingItem.id).select();
+        if (error) throw error;
+        if (!updated || updated.length === 0) {
+          toast.error('Failed to update announcement: Permission denied or item not found.');
+          return;
+        }
       } else {
         const { data: newAnn, error: insertError } = await supabase.from('announcements').insert(data).select().single();
         if (insertError) throw insertError;
       }
+      toast.success(`Announcement ${editingItem ? 'updated' : 'created'} successfully`);
       fetchData();
       setIsModalOpen(false);
       setEditingItem(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving announcement:', err);
+      toast.error(`Error saving announcement: ${err.message || 'Unknown error'}`);
     }
   };
 
   const handleSaveAction = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const priorityValue = formData.get('priority') as string;
-    const priority = (priorityValue === 'high' || priorityValue === 'low') 
-      ? priorityValue 
-      : (activeTab === 'actions' ? 'high' : 'low');
-    
-    const table = priority === 'high' ? 'portal_required_actions' : 'portal_actions';
-
     const data: any = {
       title: formData.get('title') as string,
       description: formData.get('description') as string,
@@ -129,105 +158,122 @@ export default function PortalContentManager() {
       open_in_new_tab: formData.get('open_in_new_tab') === 'on',
       recurrence_type: formData.get('recurrence_type') as string || 'none',
       recurrence_interval: parseInt(formData.get('recurrence_interval') as string) || 1,
-      recurrence_day: formData.get('recurrence_day') !== null ? parseInt(formData.get('recurrence_day') as string) : 1,
-      duration_days: formData.get('duration_days') !== null ? parseInt(formData.get('duration_days') as string) : 7,
+      recurrence_day: parseInt(formData.get('recurrence_day') as string) || 1,
+      duration_days: parseInt(formData.get('duration_days') as string) || 7,
       automated: formData.get('automated') === 'on',
       embed_in_portal: formData.get('embed_in_portal') === 'on'
     };
 
-    if (table === 'portal_actions') {
-      data.priority = priority;
+    if (activeTab === 'greenergy_links' || activeTab === 'required_actions' || activeTab === 'all') {
+      data.priority = formData.get('priority') as string || 'low';
     }
+
+    const table = editingItem?.type ? getTableFromType(editingItem.type) : (activeTab === 'greenergy_links' ? 'greenergy_links' : 'portal_required_actions');
 
     try {
       if (editingItem) {
-        // If priority changed, we might need to move between tables, but for simplicity we'll just update the current table
-        // or handle the move if priority changed.
-        const originalTable = (editingItem.type === 'required_action' || editingItem.priority === 'high') ? 'portal_required_actions' : 'portal_actions';
-        
-        if (originalTable !== table) {
-          // Move between tables: Insert into new table first, then delete from old
-          const { error: insertError } = await supabase.from(table).insert(data);
-          if (!insertError) {
-            await supabase.from(originalTable).delete().eq('id', editingItem.id);
-          } else {
-            throw insertError;
-          }
-        } else {
-          await supabase.from(table).update(data).eq('id', editingItem.id);
+        const { data: updated, error } = await supabase.from(table).update(data).eq('id', editingItem.id).select();
+        if (error) throw error;
+        if (!updated || updated.length === 0) {
+          toast.error(`Failed to update ${activeTab}: Permission denied or item not found.`);
+          return;
         }
       } else {
-        await supabase.from(table).insert(data);
+        const { data: inserted, error } = await supabase.from(table).insert(data).select();
+        if (error) throw error;
+        if (!inserted || inserted.length === 0) {
+          toast.error(`Failed to create ${activeTab}: Permission denied.`);
+          return;
+        }
       }
+      toast.success(`Item ${editingItem ? 'updated' : 'created'} successfully`);
       fetchData();
       setIsModalOpen(false);
       setEditingItem(null);
-    } catch (err) {
-      console.error('Error saving portal action:', err);
+    } catch (err: any) {
+      console.error(`Error saving ${activeTab}:`, err);
+      toast.error(`Error saving item: ${err.message || 'Unknown error'}`);
     }
   };
 
-  const handleDelete = async (id: string, table: string) => {
-    if (!confirm('Are you sure you want to delete this item?')) return;
+  const handleDelete = async (id: string, type: string) => {
+    const table = getTableFromType(type);
+    console.log(`Attempting to delete from ${table} (type: ${type}) with ID: ${id}`);
     try {
-      await supabase.from(table).delete().eq('id', id);
-      fetchData();
-    } catch (err) {
+      const { data, error } = await supabase
+        .from(table)
+        .delete()
+        .eq('id', id)
+        .select();
+      
+      if (error) throw error;
+      
+      if (!data || data.length === 0) {
+        console.warn(`No rows were deleted from ${table}. This might be an RLS issue or the ID doesn't exist.`);
+        toast.error('Delete failed: Item not found or permission denied. Please check Supabase RLS policies.');
+        return;
+      }
+      
+      toast.success('Item deleted successfully');
+      setDeleteConfirmId(null);
+      await fetchData();
+    } catch (err: any) {
       console.error('Error deleting item:', err);
+      toast.error(`Failed to delete item: ${err.message || 'Unknown error'}`);
     }
   };
 
-  const toggleActive = async (id: string, currentActive: boolean, table: string) => {
+  const toggleActive = async (id: string, currentActive: boolean, type: string) => {
+    const table = getTableFromType(type);
+    console.log(`Toggling active status for ${id} in ${table} (type: ${type}) to ${!currentActive}`);
     try {
-      await supabase.from(table).update({ active: !currentActive }).eq('id', id);
-      fetchData();
-    } catch (err) {
+      const { data, error } = await supabase
+        .from(table)
+        .update({ active: !currentActive })
+        .eq('id', id)
+        .select();
+      
+      if (error) throw error;
+      
+      if (!data || data.length === 0) {
+        toast.error(`Failed to update status: Permission denied or item not found.`);
+        return;
+      }
+      
+      toast.success(`Item ${!currentActive ? 'activated' : 'deactivated'} successfully`);
+      await fetchData();
+    } catch (err: any) {
       console.error('Error toggling active status:', err);
+      toast.error(`Failed to update status: ${err.message || 'Unknown error'}`);
     }
   };
 
-  const filteredAnnouncements = announcements.filter(a => {
-    const matchesSearch = a.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         a.message.toLowerCase().includes(searchTerm.toLowerCase());
-    if (activeTab === 'all') return matchesSearch;
-    return activeTab === 'announcements' && matchesSearch;
-  });
-
-  const filteredActions = actions.filter(a => {
-    const matchesSearch = a.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         a.description.toLowerCase().includes(searchTerm.toLowerCase());
-    if (activeTab === 'all') return matchesSearch;
-    
-    if (activeTab === 'links') {
-      return matchesSearch;
+  const displayItems = React.useMemo(() => {
+    let items: any[] = [];
+    if (activeTab === 'all') {
+      items = [
+        ...announcements.map(a => ({ ...a, type: 'announcement' })),
+        ...requiredActions.map(a => ({ ...a, type: 'required_action' })),
+        ...greEnergyLinks.map(a => ({ ...a, type: 'greenergy_link' }))
+      ];
+    } else if (activeTab === 'announcements') {
+      items = announcements.map(a => ({ ...a, type: 'announcement' }));
+    } else if (activeTab === 'required_actions') {
+      items = requiredActions.map(a => ({ ...a, type: 'required_action' }));
+    } else if (activeTab === 'greenergy_links') {
+      items = greEnergyLinks.map(a => ({ ...a, type: 'greenergy_link' }));
     }
-    return false;
-  });
 
-  const filteredRequiredActions = requiredActions.filter(a => {
-    const matchesSearch = a.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         a.description.toLowerCase().includes(searchTerm.toLowerCase());
-    if (activeTab === 'all') return matchesSearch;
-    
-    if (activeTab === 'actions') {
-      return matchesSearch;
-    }
-    return false;
-  });
+    const filtered = items.filter(item => {
+      const searchStr = searchTerm.toLowerCase();
+      return (
+        item.title?.toLowerCase().includes(searchStr) ||
+        (item.message || item.description)?.toLowerCase().includes(searchStr)
+      );
+    });
 
-  const allItems = [
-    ...filteredAnnouncements.map(a => ({ ...a, type: 'announcement' })),
-    ...filteredActions.map(a => ({ ...a, type: 'action' })),
-    ...filteredRequiredActions.map(a => ({ ...a, type: 'required_action' }))
-  ].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
-
-  const displayItems = activeTab === 'all' 
-    ? allItems 
-    : (activeTab === 'announcements' 
-        ? filteredAnnouncements.map(a => ({ ...a, type: 'announcement' }))
-        : (activeTab === 'actions' 
-            ? filteredRequiredActions.map(a => ({ ...a, type: 'required_action' })) 
-            : filteredActions.map(a => ({ ...a, type: 'action' }))));
+    return filtered.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  }, [activeTab, announcements, requiredActions, greEnergyLinks, searchTerm]);
 
   return (
     <div className="space-y-8 p-8 max-w-7xl mx-auto">
@@ -252,7 +298,7 @@ export default function PortalContentManager() {
             className="flex items-center gap-2 px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-bold rounded-2xl transition-all shadow-lg shadow-emerald-500/20"
           >
             <Plus size={20} />
-            <span>Add {activeTab === 'announcements' ? 'Announcement' : activeTab === 'actions' ? 'Action' : activeTab === 'links' ? 'Link' : 'Item'}</span>
+            <span>Add {activeTab === 'announcements' ? 'Announcement' : activeTab === 'required_actions' ? 'Required Action' : activeTab === 'greenergy_links' ? 'GreEnergy Link' : 'Item'}</span>
           </button>
         </div>
       </div>
@@ -263,8 +309,8 @@ export default function PortalContentManager() {
           {[
             { id: 'all', label: 'All Content', icon: <Filter size={16} /> },
             { id: 'announcements', label: 'Announcements', icon: <Megaphone size={16} /> },
-            { id: 'actions', label: 'Required Actions', icon: <ClipboardCheck size={16} /> },
-            { id: 'links', label: 'GreEnergy Links', icon: <LinkIcon size={16} /> }
+            { id: 'required_actions', label: 'Required Actions', icon: <ClipboardCheck size={16} /> },
+            { id: 'greenergy_links', label: 'GreEnergy Links', icon: <LinkIcon size={16} /> }
           ].map(tab => (
             <button
               key={tab.id}
@@ -336,13 +382,34 @@ export default function PortalContentManager() {
                   <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                     isAnnouncement 
                       ? (item.level === 'high' ? 'bg-red-500/10 text-red-500' : 'bg-emerald-500/10 text-emerald-500')
-                      : (item.type === 'required_action' || item.priority === 'high' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500')
+                      : (item.type === 'required_action' ? 'bg-blue-500/10 text-blue-500' : 'bg-purple-500/10 text-purple-500')
                   }`}>
-                    {isAnnouncement ? `${item.level} Priority` : item.category}
+                    {isAnnouncement ? `${item.level} Priority` : (item.type === 'required_action' ? 'Required Action' : 'Link')}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => { setEditingItem(item); setIsModalOpen(true); setActiveTab(isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'actions' : 'links')); }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
-                    <button onClick={() => handleDelete(item.id, isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'portal_required_actions' : 'portal_actions'))} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                    <button onClick={() => { 
+                      setEditingItem(item); 
+                      setIsModalOpen(true); 
+                      setActiveTab(isAnnouncement ? 'announcements' : (item.type === 'required_action' ? 'required_actions' : 'greenergy_links')); 
+                    }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
+                    {deleteConfirmId === item.id ? (
+                      <div className="flex items-center gap-1 bg-red-500/10 rounded-lg px-2 py-1 border border-red-500/20">
+                        <button 
+                          onClick={() => handleDelete(item.id, item.type)}
+                          className="text-[10px] font-bold text-red-500 hover:text-red-400 transition-colors"
+                        >
+                          Confirm
+                        </button>
+                        <button 
+                          onClick={() => setDeleteConfirmId(null)}
+                          className="text-[10px] font-bold text-gray-500 hover:text-gray-400 transition-colors ml-1"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setDeleteConfirmId(item.id)} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                    )}
                   </div>
                 </div>
                 
@@ -375,8 +442,13 @@ export default function PortalContentManager() {
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${item.active ? 'bg-emerald-500' : 'bg-gray-700'}`} />
-                    <span>{item.active ? 'Active' : 'Inactive'}</span>
+                    <button 
+                      onClick={() => toggleActive(item.id, item.active, item.type)}
+                      className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                    >
+                      <div className={`w-1.5 h-1.5 rounded-full ${item.active ? 'bg-emerald-500' : 'bg-gray-700'}`} />
+                      <span>{item.active ? 'Active' : 'Inactive'}</span>
+                    </button>
                   </div>
                 </div>
               </motion.div>
@@ -444,7 +516,7 @@ export default function PortalContentManager() {
                     </td>
                     <td className="px-6 py-4">
                       <button 
-                        onClick={() => toggleActive(item.id, item.active, isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'portal_required_actions' : 'portal_actions'))}
+                        onClick={() => toggleActive(item.id, item.active, item.type)}
                         className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-opacity"
                       >
                         <div className={`w-1.5 h-1.5 rounded-full ${item.active ? 'bg-emerald-500' : 'bg-gray-700'}`} />
@@ -453,8 +525,29 @@ export default function PortalContentManager() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => { setEditingItem(item); setIsModalOpen(true); setActiveTab(isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'actions' : 'links')); }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
-                        <button onClick={() => handleDelete(item.id, isAnnouncement ? 'announcements' : (item.priority === 'high' || item.type === 'required_action' ? 'portal_required_actions' : 'portal_actions'))} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                        <button onClick={() => { 
+                          setEditingItem(item); 
+                          setIsModalOpen(true); 
+                          setActiveTab(isAnnouncement ? 'announcements' : (item.type === 'required_action' ? 'required_actions' : 'greenergy_links')); 
+                        }} className="p-2 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition-colors"><Edit3 size={14} /></button>
+                        {deleteConfirmId === item.id ? (
+                          <div className="flex items-center gap-2 bg-red-500/10 rounded-lg px-2 py-1 border border-red-500/20">
+                            <button 
+                              onClick={() => handleDelete(item.id, item.type)}
+                              className="text-[10px] font-bold text-red-500 hover:text-red-400 transition-colors"
+                            >
+                              Confirm
+                            </button>
+                            <button 
+                              onClick={() => setDeleteConfirmId(null)}
+                              className="text-[10px] font-bold text-gray-500 hover:text-gray-400 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setDeleteConfirmId(item.id)} className="p-2 hover:bg-white/5 text-gray-400 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -491,7 +584,7 @@ export default function PortalContentManager() {
                     </div>
                     <div>
                       <h3 className="text-lg font-bold text-white">
-                        {editingItem ? 'Edit' : 'New'} {activeTab === 'announcements' ? 'Announcement' : 'Portal Item'}
+                        {editingItem ? 'Edit' : 'New'} {activeTab === 'announcements' ? 'Announcement' : activeTab === 'required_actions' ? 'Required Action' : 'GreEnergy Link'}
                       </h3>
                       <p className="text-xs text-emerald-500/70 uppercase font-bold tracking-wider">Portal Content Configuration</p>
                     </div>
@@ -508,54 +601,270 @@ export default function PortalContentManager() {
                   </button>
                 </div>
 
-                <div className="p-6 space-y-6 overflow-y-auto flex-1 custom-scrollbar">
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="space-y-2 col-span-2">
-                      <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Title</label>
-                      <input 
-                        name="title"
-                        type="text"
-                        defaultValue={editingItem?.title || ''}
-                        required
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                      />
-                    </div>
-
-                    {activeTab === 'announcements' ? (
-                      <>
-                        <div className="space-y-2 col-span-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Scheduling Mode</label>
-                          <div className="flex gap-4">
-                            <button
-                              type="button"
-                              onClick={() => setSchedulingMode('custom')}
-                              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${schedulingMode === 'custom' ? 'bg-emerald-500 text-black' : 'bg-black/40 text-gray-400'}`}
-                            >
-                              Custom Dates
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setSchedulingMode('weeks')}
-                              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${schedulingMode === 'weeks' ? 'bg-emerald-500 text-black' : 'bg-black/40 text-gray-400'}`}
-                            >
-                              Scheduled Duration (Weeks)
-                            </button>
-                          </div>
+                <div className="p-6 space-y-8 overflow-y-auto flex-1 custom-scrollbar">
+                  {activeTab === 'announcements' ? (
+                    <div className="grid grid-cols-2 gap-6">
+                      <div className="space-y-2 col-span-2">
+                        <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Title</label>
+                        <input 
+                          name="title"
+                          type="text"
+                          defaultValue={editingItem?.title || ''}
+                          required
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                        />
+                      </div>
+                      <div className="space-y-2 col-span-2">
+                        <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Priority Level</label>
+                        <select 
+                          name="level"
+                          defaultValue={editingItem?.level || 'info'}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
+                        >
+                          <option value="info">Normal Info</option>
+                          <option value="high">High Priority (Red Alert)</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2 col-span-2">
+                        <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Scheduling Mode</label>
+                        <div className="flex gap-4">
+                          <button
+                            type="button"
+                            onClick={() => setSchedulingMode('custom')}
+                            className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${schedulingMode === 'custom' ? 'bg-emerald-500 text-black' : 'bg-black/40 text-gray-400'}`}
+                          >
+                            Custom Dates
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSchedulingMode('weeks')}
+                            className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${schedulingMode === 'weeks' ? 'bg-emerald-500 text-black' : 'bg-black/40 text-gray-400'}`}
+                          >
+                            Scheduled Duration (Weeks)
+                          </button>
                         </div>
+                      </div>
 
-                        {schedulingMode === 'weeks' ? (
-                          <div className="space-y-2 col-span-2">
-                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Number of Weeks</label>
+                      {schedulingMode === 'weeks' ? (
+                        <div className="space-y-2 col-span-2">
+                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Number of Weeks</label>
+                          <input 
+                            name="weeks_count"
+                            type="number"
+                            min="1"
+                            defaultValue={editingItem?.weeks_count || 1}
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <div className="space-y-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Start Date</label>
                             <input 
-                              name="weeks_count"
-                              type="number"
-                              min="1"
-                              defaultValue={editingItem?.weeks_count || 1}
+                              name="start_date"
+                              type="date"
+                              defaultValue={editingItem?.start_date || ''}
                               className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
                             />
                           </div>
-                        ) : (
-                          <>
+                          <div className="space-y-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">End Date</label>
+                            <input 
+                              name="end_date"
+                              type="date"
+                              defaultValue={editingItem?.end_date || ''}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                        </>
+                      )}
+                      <div className="space-y-2 col-span-2">
+                        <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Message</label>
+                        <textarea 
+                          name="message"
+                          defaultValue={editingItem?.message || ''}
+                          required
+                          rows={3}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all resize-none"
+                        />
+                      </div>
+                      <div className="flex items-center gap-3 pt-2 col-span-2">
+                        <input 
+                          name="is_reminder"
+                          type="checkbox"
+                          id="is_reminder"
+                          defaultChecked={editingItem?.is_reminder ?? false}
+                          className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <label htmlFor="is_reminder" className="text-xs text-gray-400">Mark as Action Reminder</label>
+                      </div>
+                      <div className="flex items-center gap-3 pt-2 col-span-2">
+                        <input 
+                          name="active"
+                          type="checkbox"
+                          id="active_ann"
+                          defaultChecked={editingItem?.active ?? true}
+                          className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <label htmlFor="active_ann" className="text-xs text-gray-400">Active / Visible</label>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-8">
+                      {/* Section: Basic Info */}
+                      <div className="space-y-4">
+                        <h4 className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest border-b border-white/5 pb-2">Basic Information</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2 col-span-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Title</label>
+                            <input 
+                              name="title"
+                              type="text"
+                              defaultValue={editingItem?.title || ''}
+                              required
+                              placeholder={activeTab === 'required_actions' ? "Action Title" : "Link Title"}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                          <div className="space-y-2 col-span-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Description</label>
+                            <textarea 
+                              name="description"
+                              defaultValue={editingItem?.description || ''}
+                              required
+                              rows={2}
+                              placeholder="Brief description..."
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all resize-none"
+                            />
+                          </div>
+                          <div className="space-y-2 col-span-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">URL</label>
+                            <input 
+                              name="url"
+                              type="text"
+                              defaultValue={editingItem?.url || ''}
+                              placeholder="https://..."
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section: Type & Visuals */}
+                      <div className="space-y-4">
+                        <h4 className="text-[10px] font-bold text-blue-500 uppercase tracking-widest border-b border-white/5 pb-2">Type & Visuals</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Icon Name (Lucide)</label>
+                            <input 
+                              name="icon"
+                              type="text"
+                              defaultValue={editingItem?.icon || (activeTab === 'required_actions' ? 'ClipboardCheck' : 'Link')}
+                              placeholder="e.g. ExternalLink, Globe..."
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Category</label>
+                            <input 
+                              name="category"
+                              type="text"
+                              defaultValue={editingItem?.category || (activeTab === 'required_actions' ? 'Safety' : 'General')}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Type / Priority</label>
+                            <select 
+                              name="priority"
+                              value={formPriority}
+                              onChange={(e) => setFormPriority(e.target.value as 'high' | 'low')}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
+                            >
+                              <option value="high">High Priority (Required)</option>
+                              <option value="low">Low Priority (Optional)</option>
+                            </select>
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Sort Order</label>
+                            <input 
+                              name="sort_order"
+                              type="number"
+                              defaultValue={editingItem?.sort_order || 0}
+                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section: Scheduling & Automation (Only for Required Actions) */}
+                      {activeTab === 'required_actions' && (
+                        <div className="space-y-4">
+                          <h4 className="text-[10px] font-bold text-purple-500 uppercase tracking-widest border-b border-white/5 pb-2">Scheduling & Automation</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2 col-span-2">
+                              <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Deployment Mode</label>
+                              <div className="flex gap-2">
+                                {[
+                                  { id: 'none', label: 'One-time / Manual' },
+                                  { id: 'weekly', label: 'Weekly' },
+                                  { id: 'monthly', label: 'Monthly' },
+                                  { id: 'quarterly', label: 'Quarterly' }
+                                ].map((opt) => (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    onClick={() => setFormRecurrenceType(opt.id as any)}
+                                    className={`flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all ${formRecurrenceType === opt.id ? 'bg-purple-500 text-white' : 'bg-black/40 text-gray-500 hover:text-white'}`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                ))}
+                                <input type="hidden" name="recurrence_type" value={formRecurrenceType} />
+                              </div>
+                            </div>
+
+                            {formRecurrenceType !== 'none' && (
+                              <>
+                                <div className="space-y-2">
+                                  <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">
+                                    {formRecurrenceType === 'weekly' ? 'Day of Week (0-6)' : 'Day of Month (1-31)'}
+                                  </label>
+                                  <input 
+                                    name="recurrence_day"
+                                    type="number"
+                                    min={formRecurrenceType === 'weekly' ? 0 : 1}
+                                    max={formRecurrenceType === 'weekly' ? 6 : 31}
+                                    defaultValue={editingItem?.recurrence_day || 1}
+                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                                  />
+                                  <p className="text-[9px] text-gray-600 ml-1">
+                                    {formRecurrenceType === 'weekly' ? '0=Sun, 1=Mon, etc.' : 'Day of month to deploy.'}
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Duration (Days Active)</label>
+                                  <input 
+                                    name="duration_days"
+                                    type="number"
+                                    min="1"
+                                    defaultValue={editingItem?.duration_days || 7}
+                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2 col-span-2">
+                                  <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Interval (Every X {formRecurrenceType.replace('ly', '')}s)</label>
+                                  <input 
+                                    name="recurrence_interval"
+                                    type="number"
+                                    min="1"
+                                    defaultValue={editingItem?.recurrence_interval || 1}
+                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
+                                  />
+                                </div>
+                              </>
+                            )}
+
                             <div className="space-y-2">
                               <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Start Date</label>
                               <input 
@@ -574,202 +883,58 @@ export default function PortalContentManager() {
                                 className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
                               />
                             </div>
-                          </>
-                        )}
-                        <div className="space-y-2 col-span-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Message</label>
-                          <textarea 
-                            name="message"
-                            defaultValue={editingItem?.message || ''}
-                            required
-                            rows={3}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all resize-none"
-                          />
-                        </div>
-                        <div className="flex items-center gap-3 pt-6">
-                          <input 
-                            name="is_reminder"
-                            type="checkbox"
-                            defaultChecked={editingItem?.is_reminder ?? false}
-                            className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
-                          />
-                          <label className="text-xs text-gray-400">Mark as Action Reminder</label>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="space-y-2 col-span-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Description</label>
-                          <textarea 
-                            name="description"
-                            defaultValue={editingItem?.description || ''}
-                            required
-                            rows={2}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all resize-none"
-                          />
-                        </div>
-                        <div className="space-y-2 col-span-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Target URL</label>
-                          <input 
-                            name="url"
-                            type="url"
-                            defaultValue={editingItem?.url || ''}
-                            required
-                            placeholder="https://..."
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Icon Name (Lucide)</label>
-                          <input 
-                            name="icon"
-                            type="text"
-                            defaultValue={editingItem?.icon || 'Link'}
-                            placeholder="e.g. ExternalLink, Globe..."
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                          />
-                          <p className="text-[9px] text-gray-600 mt-1">
-                            Common icons: ExternalLink, Globe, FileText, Layout, Mail, Phone, Truck, Users, Calendar, ClipboardCheck, Construction, Info, AlertTriangle
-                          </p>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Type / Priority</label>
-                          <select 
-                            name="priority"
-                            defaultValue={editingItem?.priority || (activeTab === 'actions' ? 'high' : 'low')}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
-                          >
-                            <option value="high">Required Action (High Priority)</option>
-                            <option value="low">GreEnergy Link (Low Priority)</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Category</label>
-                          <input 
-                            name="category"
-                            type="text"
-                            defaultValue={editingItem?.category || 'General'}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Sort Order</label>
-                          <input 
-                            name="sort_order"
-                            type="number"
-                            defaultValue={editingItem?.sort_order || 0}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Recurrence Type</label>
-                          <select 
-                            name="recurrence_type"
-                            defaultValue={editingItem?.recurrence_type || 'none'}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all appearance-none"
-                          >
-                            <option value="none">One-time / Manual</option>
-                            <option value="weekly">Weekly</option>
-                            <option value="monthly">Monthly</option>
-                            <option value="quarterly">Quarterly</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Recurrence Settings</label>
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1">
-                              <label className="text-[9px] text-gray-600 uppercase font-bold ml-1">Every (Interval)</label>
-                              <input 
-                                name="recurrence_interval"
-                                type="number"
-                                placeholder="e.g. 1"
-                                defaultValue={editingItem?.recurrence_interval || 1}
-                                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <label className="text-[9px] text-gray-600 uppercase font-bold ml-1">On Day</label>
-                              <input 
-                                name="recurrence_day"
-                                type="number"
-                                placeholder="e.g. 1"
-                                defaultValue={editingItem?.recurrence_day || 1}
-                                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                              />
-                            </div>
                           </div>
-                          <div className="space-y-1 mt-4">
-                            <label className="text-[9px] text-gray-600 uppercase font-bold ml-1">Duration (Days Active)</label>
-                            <input 
-                              name="duration_days"
-                              type="number"
-                              placeholder="e.g. 7"
-                              defaultValue={editingItem?.duration_days || 7}
-                              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                            />
-                          </div>
-                          <p className="text-[9px] text-gray-600 mt-1 px-1">
-                            Monthly: Day 1-31. Weekly: Day 0-6 (0=Sun, 1=Mon).
-                          </p>
                         </div>
-                        <div className="flex items-center gap-3 pt-6">
-                          <input 
-                            name="automated"
-                            type="checkbox"
-                            defaultChecked={editingItem?.automated ?? false}
-                            className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
-                          />
-                          <label className="text-xs text-gray-400">Auto-generate Reminders</label>
-                        </div>
-                        <div className="flex items-center gap-3 pt-6">
-                          <input 
-                            name="open_in_new_tab"
-                            type="checkbox"
-                            defaultChecked={editingItem?.open_in_new_tab ?? true}
-                            className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
-                          />
-                          <label className="text-xs text-gray-400">Open in new tab</label>
-                        </div>
-                        <div className="flex items-center gap-3 pt-2">
-                          <input 
-                            name="embed_in_portal"
-                            type="checkbox"
-                            defaultChecked={editingItem?.embed_in_portal ?? false}
-                            className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
-                          />
-                          <label className="text-xs text-gray-400">Embed directly in portal (Iframe)</label>
-                        </div>
-                      </>
-                    )}
+                      )}
 
-                    <div className="space-y-2">
-                      <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">Start Date</label>
-                      <input 
-                        name="start_date"
-                        type="date"
-                        defaultValue={editingItem?.start_date || ''}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                      />
+                      {/* Section: Options */}
+                      <div className="space-y-4">
+                        <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-white/5 pb-2">Options</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="flex items-center gap-3">
+                            <input 
+                              name="automated"
+                              type="checkbox"
+                              id="automated"
+                              defaultChecked={editingItem?.automated ?? true}
+                              className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
+                            />
+                            <label htmlFor="automated" className="text-xs text-gray-400">Auto-generate Reminders</label>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <input 
+                              name="open_in_new_tab"
+                              type="checkbox"
+                              id="open_in_new_tab"
+                              defaultChecked={editingItem?.open_in_new_tab ?? true}
+                              className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
+                            />
+                            <label htmlFor="open_in_new_tab" className="text-xs text-gray-400">Open in new tab</label>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <input 
+                              name="embed_in_portal"
+                              type="checkbox"
+                              id="embed_in_portal"
+                              defaultChecked={editingItem?.embed_in_portal ?? false}
+                              className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
+                            />
+                            <label htmlFor="embed_in_portal" className="text-xs text-gray-400">Embed in portal</label>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <input 
+                              name="active"
+                              type="checkbox"
+                              id="active_action"
+                              defaultChecked={editingItem?.active ?? true}
+                              className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
+                            />
+                            <label htmlFor="active_action" className="text-xs text-gray-400">Active / Visible</label>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] text-gray-500 uppercase font-bold ml-1">End Date</label>
-                      <input 
-                        name="end_date"
-                        type="date"
-                        defaultValue={editingItem?.end_date || ''}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none transition-all"
-                      />
-                    </div>
-                    <div className="flex items-center gap-3 pt-6">
-                      <input 
-                        name="active"
-                        type="checkbox"
-                        defaultChecked={editingItem?.active ?? true}
-                        className="w-4 h-4 rounded border-white/10 bg-black/40 text-emerald-500 focus:ring-emerald-500"
-                      />
-                      <label className="text-xs text-gray-400">Active / Visible</label>
-                    </div>
-                  </div>
+                  )}
                 </div>
 
                 <div className="p-6 bg-black/40 border-t border-white/5 flex justify-end gap-3">
